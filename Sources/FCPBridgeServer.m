@@ -311,6 +311,283 @@ static NSDictionary *FCPBridge_handleSystemGetIvars(NSDictionary *params) {
     return @{@"className": className, @"ivars": ivars, @"count": @(count)};
 }
 
+#pragma mark - Timeline Helpers
+
+static id FCPBridge_getActiveTimelineModule(void) {
+    // PEAppController -> activeEditorContainer -> timelineModule
+    // The app delegate is the PEAppController
+    id app = ((id (*)(id, SEL))objc_msgSend)(
+        objc_getClass("NSApplication"), @selector(sharedApplication));
+    id delegate = ((id (*)(id, SEL))objc_msgSend)(app, @selector(delegate));
+    if (!delegate) return nil;
+
+    // Try activeEditorContainer
+    SEL aecSel = @selector(activeEditorContainer);
+    if (![delegate respondsToSelector:aecSel]) return nil;
+    id editorContainer = ((id (*)(id, SEL))objc_msgSend)(delegate, aecSel);
+    if (!editorContainer) return nil;
+
+    // Get timeline module from editor container
+    SEL tmSel = NSSelectorFromString(@"timelineModule");
+    if ([editorContainer respondsToSelector:tmSel]) {
+        return ((id (*)(id, SEL))objc_msgSend)(editorContainer, tmSel);
+    }
+
+    // Fallback: try activeEditorModule
+    SEL aemSel = @selector(activeEditorModule);
+    if ([delegate respondsToSelector:aemSel]) {
+        return ((id (*)(id, SEL))objc_msgSend)(delegate, aemSel);
+    }
+
+    return nil;
+}
+
+static id FCPBridge_getEditorContainer(void) {
+    id app = ((id (*)(id, SEL))objc_msgSend)(
+        objc_getClass("NSApplication"), @selector(sharedApplication));
+    id delegate = ((id (*)(id, SEL))objc_msgSend)(app, @selector(delegate));
+    if (!delegate) return nil;
+
+    SEL aecSel = @selector(activeEditorContainer);
+    if (![delegate respondsToSelector:aecSel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(delegate, aecSel);
+}
+
+// Send an IBAction-style message (-(void)action:(id)sender) to the timeline module
+static NSDictionary *FCPBridge_sendTimelineAction(NSString *selectorName) {
+    __block NSDictionary *result = nil;
+
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (!timeline) {
+                result = @{@"error": @"No active timeline module. Is a project open?"};
+                return;
+            }
+
+            SEL sel = NSSelectorFromString(selectorName);
+            if (![timeline respondsToSelector:sel]) {
+                result = @{@"error": [NSString stringWithFormat:
+                    @"Timeline module does not respond to %@", selectorName]};
+                return;
+            }
+
+            ((void (*)(id, SEL, id))objc_msgSend)(timeline, sel, nil);
+            result = @{@"action": selectorName, @"status": @"ok"};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+
+    return result;
+}
+
+// Send an IBAction to the editor container (for playback)
+static NSDictionary *FCPBridge_sendEditorAction(NSString *selectorName) {
+    __block NSDictionary *result = nil;
+
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id container = FCPBridge_getEditorContainer();
+            if (!container) {
+                result = @{@"error": @"No active editor container"};
+                return;
+            }
+
+            SEL sel = NSSelectorFromString(selectorName);
+            if (![container respondsToSelector:sel]) {
+                result = @{@"error": [NSString stringWithFormat:
+                    @"Editor container does not respond to %@", selectorName]};
+                return;
+            }
+
+            ((void (*)(id, SEL, id))objc_msgSend)(container, sel, nil);
+            result = @{@"action": selectorName, @"status": @"ok"};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+
+    return result;
+}
+
+#pragma mark - Timeline Command Handlers
+
+static NSDictionary *FCPBridge_handleTimelineAction(NSDictionary *params) {
+    NSString *action = params[@"action"];
+    if (!action) return @{@"error": @"action parameter required"};
+
+    // Map friendly names to selectors
+    NSDictionary *actionMap = @{
+        // Blade/Split
+        @"blade":            @"blade:",
+        @"bladeAll":         @"bladeAll:",
+
+        // Markers
+        @"addMarker":        @"addMarker:",
+        @"addTodoMarker":    @"addTodoMarker:",
+        @"addChapterMarker": @"addChapterMarker:",
+        @"deleteMarker":     @"deleteMarker:",
+        @"nextMarker":       @"nextMarker:",
+        @"previousMarker":   @"previousMarker:",
+
+        // Transitions
+        @"addTransition":    @"addTransition:",
+
+        // Navigation
+        @"nextEdit":         @"nextEdit:",
+        @"previousEdit":     @"previousEdit:",
+        @"selectClipAtPlayhead": @"selectClipAtPlayhead:",
+        @"selectToPlayhead": @"selectToPlayhead:",
+
+        // Selection
+        @"selectAll":        @"selectAll:",
+        @"deselectAll":      @"deselectAll:",
+
+        // Edit operations
+        @"delete":           @"delete:",
+        @"cut":              @"cut:",
+        @"copy":             @"copy:",
+        @"paste":            @"paste:",
+        @"undo":             @"undo:",
+        @"redo":             @"redo:",
+
+        // Trim
+        @"trimToPlayhead":   @"trimToPlayhead:",
+        @"extendEditToPlayhead": @"actionExtendEditToPlayhead",
+
+        // Other
+        @"insertPlaceholder": @"insertPlaceholderStoryline:",
+        @"insertGap":        @"insertGapAtPlayhead:",
+    };
+
+    NSString *selector = actionMap[action];
+    if (!selector) {
+        // Allow passing raw selector names too
+        selector = action;
+        if (![selector hasSuffix:@":"]) {
+            selector = [selector stringByAppendingString:@":"];
+        }
+    }
+
+    return FCPBridge_sendTimelineAction(selector);
+}
+
+static NSDictionary *FCPBridge_handlePlayback(NSDictionary *params) {
+    NSString *action = params[@"action"];
+    if (!action) return @{@"error": @"action parameter required"};
+
+    NSDictionary *actionMap = @{
+        @"playPause":    @"playPause:",
+        @"play":         @"play:",
+        @"pause":        @"pause:",
+        @"playForward":  @"playForward:",
+        @"playBackward": @"playReverse:",
+        @"goToStart":    @"goToBeginning:",
+        @"goToEnd":      @"goToEnd:",
+        @"nextFrame":    @"nextFrame:",
+        @"prevFrame":    @"previousFrame:",
+    };
+
+    NSString *selector = actionMap[action];
+    if (!selector) {
+        selector = action;
+        if (![selector hasSuffix:@":"]) {
+            selector = [selector stringByAppendingString:@":"];
+        }
+    }
+
+    return FCPBridge_sendEditorAction(selector);
+}
+
+static NSDictionary *FCPBridge_handleTimelineGetState(NSDictionary *params) {
+    __block NSDictionary *result = nil;
+
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (!timeline) {
+                result = @{@"error": @"No active timeline module"};
+                return;
+            }
+
+            NSMutableDictionary *state = [NSMutableDictionary dictionary];
+
+            // Get sequence
+            SEL seqSel = @selector(sequence);
+            if ([timeline respondsToSelector:seqSel]) {
+                id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, seqSel);
+                if (sequence) {
+                    state[@"sequence"] = [sequence description];
+                    state[@"sequenceClass"] = NSStringFromClass([sequence class]);
+
+                    // Get contained items count
+                    SEL ciSel = @selector(containedItems);
+                    if ([sequence respondsToSelector:ciSel]) {
+                        id items = ((id (*)(id, SEL))objc_msgSend)(sequence, ciSel);
+                        if ([items respondsToSelector:@selector(count)]) {
+                            state[@"itemCount"] = @([(NSArray *)items count]);
+                        }
+                        // Describe each item
+                        if ([items respondsToSelector:@selector(objectEnumerator)]) {
+                            NSMutableArray *itemDescs = [NSMutableArray array];
+                            for (id item in (NSArray *)items) {
+                                NSMutableDictionary *desc = [NSMutableDictionary dictionary];
+                                desc[@"class"] = NSStringFromClass([item class]);
+                                desc[@"description"] = [item description];
+
+                                // Try to get name
+                                if ([item respondsToSelector:@selector(name)]) {
+                                    id name = ((id (*)(id, SEL))objc_msgSend)(item, @selector(name));
+                                    if (name) desc[@"name"] = name;
+                                }
+                                // Try to get mediaType
+                                if ([item respondsToSelector:@selector(mediaType)]) {
+                                    long long mt = ((long long (*)(id, SEL))objc_msgSend)(item, @selector(mediaType));
+                                    desc[@"mediaType"] = @(mt);
+                                }
+
+                                [itemDescs addObject:desc];
+                            }
+                            state[@"items"] = itemDescs;
+                        }
+                    }
+
+                    // Get hasContainedItems
+                    if ([sequence respondsToSelector:@selector(hasContainedItems)]) {
+                        BOOL has = ((BOOL (*)(id, SEL))objc_msgSend)(sequence, @selector(hasContainedItems));
+                        state[@"hasItems"] = @(has);
+                    }
+                } else {
+                    state[@"sequence"] = [NSNull null];
+                }
+            }
+
+            // Get playhead time (CMTime struct - value/timescale/flags/epoch)
+            SEL ptSel = @selector(playheadTime);
+            if ([timeline respondsToSelector:ptSel]) {
+                // CMTime is {value:int64, timescale:int32, flags:uint32, epoch:int64}
+                // Total 24 bytes. We need to use objc_msgSend_stret or check struct return
+                typedef struct { int64_t value; int32_t timescale; uint32_t flags; int64_t epoch; } CMTime;
+                CMTime t;
+                // On arm64, small structs are returned in registers
+                t = ((CMTime (*)(id, SEL))objc_msgSend)(timeline, ptSel);
+                state[@"playheadTime"] = @{
+                    @"value": @(t.value),
+                    @"timescale": @(t.timescale),
+                    @"seconds": (t.timescale > 0) ? @((double)t.value / t.timescale) : @(0)
+                };
+            }
+
+            result = state;
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+
+    return result;
+}
+
 #pragma mark - Request Dispatcher
 
 static NSDictionary *FCPBridge_handleRequest(NSDictionary *request) {
@@ -342,7 +619,18 @@ static NSDictionary *FCPBridge_handleRequest(NSDictionary *request) {
         result = FCPBridge_handleSystemGetSuperchain(params);
     } else if ([method isEqualToString:@"system.getIvars"]) {
         result = FCPBridge_handleSystemGetIvars(params);
-    } else {
+    }
+    // timeline.* namespace
+    else if ([method isEqualToString:@"timeline.action"]) {
+        result = FCPBridge_handleTimelineAction(params);
+    } else if ([method isEqualToString:@"timeline.getState"]) {
+        result = FCPBridge_handleTimelineGetState(params);
+    }
+    // playback.* namespace
+    else if ([method isEqualToString:@"playback.action"]) {
+        result = FCPBridge_handlePlayback(params);
+    }
+    else {
         return @{@"error": @{@"code": @(-32601), @"message":
                      [NSString stringWithFormat:@"Method not found: %@", method]}};
     }

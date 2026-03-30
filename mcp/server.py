@@ -196,6 +196,67 @@ def call_method(class_name: str, selector: str, class_method: bool = True) -> st
 
 
 # ============================================================
+# Timeline Editing Operations (direct ObjC calls)
+# ============================================================
+
+@mcp.tool()
+def timeline_action(action: str) -> str:
+    """Perform a timeline editing action. These are direct ObjC calls into FCP's editing engine.
+
+    Available actions:
+      Blade/Split: blade, bladeAll
+      Markers: addMarker, addTodoMarker, addChapterMarker, deleteMarker, nextMarker, previousMarker
+      Transitions: addTransition
+      Navigation: nextEdit, previousEdit, selectClipAtPlayhead
+      Selection: selectAll, deselectAll
+      Edit: delete, cut, copy, paste
+      Undo: undo, redo
+      Insert: insertGap
+      Trim: trimToPlayhead
+
+    Example: timeline_action("blade") - blades the clip at the current playhead
+    """
+    r = bridge.call("timeline.action", action=action)
+    if "error" in r:
+        return f"Error: {r['error']}"
+    return json.dumps(r, indent=2)
+
+
+@mcp.tool()
+def playback_action(action: str) -> str:
+    """Control playback. Direct ObjC calls to FCP's player.
+
+    Available actions:
+      playPause - toggle play/pause
+      play - start playing
+      pause - stop playing
+      goToStart - jump to beginning of timeline
+      goToEnd - jump to end of timeline
+      nextFrame - advance one frame
+      prevFrame - go back one frame
+      playForward - play forward
+      playBackward - play in reverse
+
+    Example: playback_action("goToStart")
+    """
+    r = bridge.call("playback.action", action=action)
+    if "error" in r:
+        return f"Error: {r['error']}"
+    return json.dumps(r, indent=2)
+
+
+@mcp.tool()
+def timeline_get_state() -> str:
+    """Get current timeline state: playhead position, sequence info, list of clips/items.
+    Returns playhead time in seconds, item count, and description of each timeline item.
+    """
+    r = bridge.call("timeline.getState")
+    if "error" in r:
+        return f"Error: {r['error']}"
+    return json.dumps(r, indent=2, default=str)
+
+
+# ============================================================
 # Library & Project Management
 # ============================================================
 
