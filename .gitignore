@@ -38,3 +38,6 @@ Package.resolved
 
 # Release binaries (use GitHub Releases instead)
 patcher/FCPBridgePatcher-v*.zip
+
+# Project instructions
+CLAUDE.md
