@@ -62,6 +62,8 @@ void FCPBridge_installTransitionFreezeExtendSwizzle(void);
 #pragma mark - Effect Drag as Adjustment Clip
 
 void FCPBridge_installEffectDragAsAdjustmentClip(void);
+void FCPBridge_setEffectDragAsAdjustmentClipEnabled(BOOL enabled);
+BOOL FCPBridge_isEffectDragAsAdjustmentClipEnabled(void);
 
 #pragma mark - Viewer Pinch-to-Zoom
 

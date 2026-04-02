@@ -138,6 +138,7 @@ static void FCPBridge_checkCompatibility(void) {
 + (instancetype)shared;
 - (void)toggleTranscriptPanel:(id)sender;
 - (void)toggleCommandPalette:(id)sender;
+- (void)toggleEffectDragAsAdjustmentClip:(id)sender;
 - (void)toggleViewerPinchZoom:(id)sender;
 @property (nonatomic, weak) NSButton *toolbarButton;
 @property (nonatomic, weak) NSButton *paletteToolbarButton;
@@ -172,6 +173,14 @@ static void FCPBridge_checkCompatibility(void) {
 
 - (void)toggleCommandPalette:(id)sender {
     [[FCPCommandPalette sharedPalette] togglePalette];
+}
+
+- (void)toggleEffectDragAsAdjustmentClip:(id)sender {
+    BOOL newState = !FCPBridge_isEffectDragAsAdjustmentClipEnabled();
+    FCPBridge_setEffectDragAsAdjustmentClipEnabled(newState);
+    if ([sender isKindOfClass:[NSMenuItem class]]) {
+        [(NSMenuItem *)sender setState:newState ? NSControlStateValueOn : NSControlStateValueOff];
+    }
 }
 
 - (void)toggleViewerPinchZoom:(id)sender {
@@ -228,6 +237,15 @@ static void FCPBridge_installMenu(void) {
     [bridgeMenu addItem:[NSMenuItem separatorItem]];
 
     NSMenu *optionsMenu = [[NSMenu alloc] initWithTitle:@"Options"];
+
+    NSMenuItem *effectDragItem = [[NSMenuItem alloc]
+        initWithTitle:@"Effect Drag as Adjustment Clip"
+               action:@selector(toggleEffectDragAsAdjustmentClip:)
+        keyEquivalent:@""];
+    effectDragItem.target = [FCPBridgeMenuController shared];
+    effectDragItem.state = FCPBridge_isEffectDragAsAdjustmentClipEnabled()
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    [optionsMenu addItem:effectDragItem];
 
     NSMenuItem *pinchZoomItem = [[NSMenuItem alloc]
         initWithTitle:@"Viewer Pinch-to-Zoom"

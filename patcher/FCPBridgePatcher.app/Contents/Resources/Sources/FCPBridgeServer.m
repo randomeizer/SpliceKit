@@ -16,6 +16,9 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Accelerate/Accelerate.h>
 
+// Forward declaration — defined in #pragma mark - Effect Drag as Adjustment Clip
+void FCPBridge_installEffectDragSwizzlesNow(void);
+
 #define FCPBRIDGE_TCP_PORT 9876
 
 static int sServerFd = -1;
@@ -662,6 +665,7 @@ static NSDictionary *FCPBridge_handleSetProperty(NSDictionary *params) {
 #pragma mark - timeline.getDetailedState
 
 NSDictionary *FCPBridge_handleTimelineGetDetailedState(NSDictionary *params) {
+    FCPBridge_installEffectDragSwizzlesNow();
     NSInteger limit = [params[@"limit"] integerValue] ?: 200;
 
     __block NSDictionary *result = nil;
@@ -1119,6 +1123,9 @@ static NSDictionary *FCPBridge_sendEditorAction(NSString *selectorName) {
 #pragma mark - Timeline Command Handlers
 
 NSDictionary *FCPBridge_handleTimelineAction(NSDictionary *params) {
+    // Lazily install effect-drag swizzles on first timeline access
+    FCPBridge_installEffectDragSwizzlesNow();
+
     NSString *action = params[@"action"];
     if (!action) return @{@"error": @"action parameter required"};
 
@@ -4161,6 +4168,7 @@ static NSDictionary *FCPBridge_handleViewerSetZoom(NSDictionary *params) {
 
 static NSDictionary *FCPBridge_handleOptionsGet(NSDictionary *params) {
     return @{
+        @"effectDragAsAdjustmentClip": @(FCPBridge_isEffectDragAsAdjustmentClipEnabled()),
         @"viewerPinchZoom": @(FCPBridge_isViewerPinchZoomEnabled()),
     };
 }
@@ -4174,6 +4182,12 @@ static NSDictionary *FCPBridge_handleOptionsSet(NSDictionary *params) {
         if (!enabled) return @{@"error": @"'enabled' parameter required (true/false)"};
         FCPBridge_setViewerPinchZoomEnabled([enabled boolValue]);
         return @{@"status": @"ok", @"viewerPinchZoom": @(FCPBridge_isViewerPinchZoomEnabled())};
+    } else if ([option isEqualToString:@"effectDragAsAdjustmentClip"]) {
+        NSNumber *enabled = params[@"enabled"];
+        if (!enabled) return @{@"error": @"'enabled' parameter required (true/false)"};
+        FCPBridge_setEffectDragAsAdjustmentClipEnabled([enabled boolValue]);
+        return @{@"status": @"ok",
+                 @"effectDragAsAdjustmentClip": @(FCPBridge_isEffectDragAsAdjustmentClipEnabled())};
     }
 
     return @{@"error": [NSString stringWithFormat:@"Unknown option: %@", option]};
@@ -4468,12 +4482,320 @@ void FCPBridge_installTransitionFreezeExtendSwizzle(void) {
 
 // When a video filter is dragged from the Effects Browser to empty timeline space
 // (above/below clips), create an adjustment clip with that effect instead of rejecting.
-// connectAdjustmentClip: already handles getting the selected effect from the
-// Effects Browser, applying it, and naming the clip after the effect.
+// connectAdjustmentClip: gives us the right drop placement, but during a drag the
+// active-browser selection is unreliable, so we capture the dragged effect ID
+// ourselves and apply/rename the new clip after it is created.
 
+static NSString * const kFCPBridgeEffectDragAsAdjustmentClip = @"FCPBridgeEffectDragAsAdjustmentClip";
 static BOOL sEffectDropOnEmptySpace = NO;
 static IMP sOrigValidateEffectsDrop = NULL;
 static IMP sOrigTLKPerformDragOp = NULL;
+static IMP sOrigKeyWindowActiveModule = NULL;
+static NSString *sDraggedEffectID = nil;
+static NSString *sDraggedEffectName = nil;
+static NSString *sEffectDragKeyWindowSelectedEffectID = nil;
+static BOOL sEffectDragInstallRetryScheduled = NO;
+static NSInteger sEffectDragInstallAttempts = 0;
+
+static void FCPBridge_scheduleEffectDragInstallRetry(void);
+
+@interface FCPBridgeEffectDragModuleProxy : NSProxy {
+    id _target;
+}
++ (instancetype)proxyWithTarget:(id)target;
+- (id)selectedEffectID;
+@end
+
+@implementation FCPBridgeEffectDragModuleProxy
++ (instancetype)proxyWithTarget:(id)target {
+    FCPBridgeEffectDragModuleProxy *proxy = [FCPBridgeEffectDragModuleProxy alloc];
+    proxy->_target = target;
+    return proxy;
+}
+
+- (id)selectedEffectID {
+    return sEffectDragKeyWindowSelectedEffectID;
+}
+
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    if (selector == @selector(selectedEffectID)) {
+        return [NSMethodSignature signatureWithObjCTypes:"@@:"];
+    }
+    return _target ? [_target methodSignatureForSelector:selector]
+                   : [NSObject instanceMethodSignatureForSelector:@selector(init)];
+}
+
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    if (_target) {
+        [invocation invokeWithTarget:_target];
+    }
+}
+
+- (BOOL)respondsToSelector:(SEL)aSelector {
+    return aSelector == @selector(selectedEffectID) || [_target respondsToSelector:aSelector];
+}
+
+- (Class)class {
+    return _target ? [_target class] : [NSObject class];
+}
+
+- (BOOL)isKindOfClass:(Class)aClass {
+    return _target ? [_target isKindOfClass:aClass] : [super isKindOfClass:aClass];
+}
+
+- (NSString *)description {
+    return _target ? [_target description] : @"<FCPBridgeEffectDragModuleProxy>";
+}
+@end
+
+static id FCPBridge_swizzled_keyWindowActiveModule(id self, SEL _cmd) {
+    id original = sOrigKeyWindowActiveModule
+        ? ((id (*)(id, SEL))sOrigKeyWindowActiveModule)(self, _cmd)
+        : nil;
+
+    if (sEffectDragKeyWindowSelectedEffectID.length > 0) {
+        return [FCPBridgeEffectDragModuleProxy proxyWithTarget:original];
+    }
+
+    return original;
+}
+
+static void FCPBridge_clearDraggedEffectState(void) {
+    sEffectDropOnEmptySpace = NO;
+    sDraggedEffectID = nil;
+    sDraggedEffectName = nil;
+}
+
+BOOL FCPBridge_isEffectDragAsAdjustmentClipEnabled(void) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    id storedValue = [defaults objectForKey:kFCPBridgeEffectDragAsAdjustmentClip];
+    if (!storedValue) {
+        return YES;
+    }
+    return [defaults boolForKey:kFCPBridgeEffectDragAsAdjustmentClip];
+}
+
+void FCPBridge_setEffectDragAsAdjustmentClipEnabled(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFCPBridgeEffectDragAsAdjustmentClip];
+    if (enabled) {
+        FCPBridge_log(@"[EffectDrag] Enabled");
+        FCPBridge_installEffectDragAsAdjustmentClip();
+    } else {
+        FCPBridge_log(@"[EffectDrag] Disabled");
+        sEffectDragKeyWindowSelectedEffectID = nil;
+        FCPBridge_clearDraggedEffectState();
+    }
+}
+
+static Class FCPBridge_findLoadedClassNamed(const char *wantedName) {
+    if (!wantedName) return Nil;
+
+    unsigned int classCount = 0;
+    Class *classes = objc_copyClassList(&classCount);
+    if (!classes) return Nil;
+
+    Class foundClass = Nil;
+    for (unsigned int i = 0; i < classCount; i++) {
+        const char *className = class_getName(classes[i]);
+        if (className && strcmp(className, wantedName) == 0) {
+            foundClass = classes[i];
+            break;
+        }
+    }
+
+    free(classes);
+    return foundClass;
+}
+
+static NSArray *FCPBridge_effectDragSelectedItems(id timelineModule) {
+    if (!timelineModule) return nil;
+
+    SEL selSel = NSSelectorFromString(@"selectedItems:includeItemBeforePlayheadIfLast:");
+    if (![timelineModule respondsToSelector:selSel]) return nil;
+
+    id selected = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)(timelineModule, selSel, NO, NO);
+    return [selected isKindOfClass:[NSArray class]] ? [(NSArray *)selected copy] : nil;
+}
+
+static NSArray *FCPBridge_effectDragContainedItems(id timelineModule) {
+    if (!timelineModule) return nil;
+
+    SEL seqSel = NSSelectorFromString(@"sequence");
+    id sequence = [timelineModule respondsToSelector:seqSel]
+        ? ((id (*)(id, SEL))objc_msgSend)(timelineModule, seqSel)
+        : nil;
+    if (!sequence) return nil;
+
+    id itemsSource = nil;
+    if ([sequence respondsToSelector:@selector(primaryObject)]) {
+        id primaryObj = ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(primaryObject));
+        if (primaryObj && [primaryObj respondsToSelector:@selector(containedItems)]) {
+            itemsSource = ((id (*)(id, SEL))objc_msgSend)(primaryObj, @selector(containedItems));
+        }
+    }
+    if (!itemsSource && [sequence respondsToSelector:@selector(containedItems)]) {
+        itemsSource = ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(containedItems));
+    }
+
+    return [itemsSource isKindOfClass:[NSArray class]] ? [(NSArray *)itemsSource copy] : nil;
+}
+
+static NSSet *FCPBridge_effectDragPointerSet(NSArray *objects) {
+    NSMutableSet *result = [NSMutableSet setWithCapacity:objects.count];
+    for (id object in objects) {
+        if (object) {
+            [result addObject:[NSValue valueWithNonretainedObject:object]];
+        }
+    }
+    return result;
+}
+
+static BOOL FCPBridge_effectDragLooksLikeAdjustmentClip(id clip) {
+    if (!clip) return NO;
+
+    NSString *className = NSStringFromClass([clip class]) ?: @"";
+    if ([className localizedCaseInsensitiveContainsString:@"adjust"]) {
+        return YES;
+    }
+
+    if ([clip respondsToSelector:@selector(displayName)]) {
+        id name = ((id (*)(id, SEL))objc_msgSend)(clip, @selector(displayName));
+        if ([name isKindOfClass:[NSString class]] &&
+            [(NSString *)name localizedCaseInsensitiveContainsString:@"adjustment"]) {
+            return YES;
+        }
+    }
+
+    return NO;
+}
+
+static void FCPBridge_effectDragExtractEffectInfo(
+    id pasteboard, id timelineModule, NSString **outEffectID, NSString **outEffectName)
+{
+    NSString *effectID = nil;
+    NSString *effectName = nil;
+
+    if (pasteboard && timelineModule) {
+        SEL seqSel = NSSelectorFromString(@"sequence");
+        id sequence = [timelineModule respondsToSelector:seqSel]
+            ? ((id (*)(id, SEL))objc_msgSend)(timelineModule, seqSel)
+            : nil;
+        SEL newMediaSel = NSSelectorFromString(@"newMediaWithSequence:fromURL:options:");
+        if (sequence && [pasteboard respondsToSelector:newMediaSel]) {
+            id items = ((id (*)(id, SEL, id, id, id))objc_msgSend)(
+                pasteboard, newMediaSel, sequence, nil, nil);
+            for (id item in items) {
+                id object = item;
+                SEL objectSel = NSSelectorFromString(@"object");
+                if ([item respondsToSelector:objectSel]) {
+                    id inner = ((id (*)(id, SEL))objc_msgSend)(item, objectSel);
+                    if (inner) object = inner;
+                }
+                if ([object respondsToSelector:@selector(effectID)]) {
+                    id resolvedEffectID = ((id (*)(id, SEL))objc_msgSend)(object, @selector(effectID));
+                    if ([resolvedEffectID isKindOfClass:[NSString class]] &&
+                        [(NSString *)resolvedEffectID length] > 0) {
+                        effectID = resolvedEffectID;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (effectID) {
+        Class ffEffect = objc_getClass("FFEffect");
+        if (ffEffect && [ffEffect respondsToSelector:@selector(displayNameForEffectID:)]) {
+            id displayName = ((id (*)(id, SEL, id))objc_msgSend)(
+                (id)ffEffect, @selector(displayNameForEffectID:), effectID);
+            if ([displayName isKindOfClass:[NSString class]] && [(NSString *)displayName length] > 0) {
+                effectName = displayName;
+            }
+        }
+    }
+
+    if (outEffectID) *outEffectID = effectID;
+    if (outEffectName) *outEffectName = effectName;
+}
+
+static id FCPBridge_effectDragVideoEffectsTarget(id clip) {
+    if (!clip) return nil;
+
+    SEL veSel = NSSelectorFromString(@"videoEffects");
+    if ([clip respondsToSelector:veSel]) {
+        id videoEffects = ((id (*)(id, SEL))objc_msgSend)(clip, veSel);
+        if (videoEffects) return videoEffects;
+    }
+
+    SEL toolSel = NSSelectorFromString(@"representedToolObject");
+    if ([clip respondsToSelector:toolSel]) {
+        id toolObj = ((id (*)(id, SEL))objc_msgSend)(clip, toolSel);
+        if (toolObj && [toolObj respondsToSelector:veSel]) {
+            return ((id (*)(id, SEL))objc_msgSend)(toolObj, veSel);
+        }
+    }
+
+    return nil;
+}
+
+static BOOL FCPBridge_effectDragClipHasEffectID(id clip, NSString *effectID) {
+    if (!clip || effectID.length == 0) return NO;
+
+    SEL effectsSel = NSSelectorFromString(@"effects");
+    if (![clip respondsToSelector:effectsSel]) return NO;
+
+    id effects = ((id (*)(id, SEL))objc_msgSend)(clip, effectsSel);
+    if (![effects isKindOfClass:[NSArray class]]) return NO;
+
+    for (id effect in (NSArray *)effects) {
+        if ([effect respondsToSelector:@selector(effectID)]) {
+            id existingID = ((id (*)(id, SEL))objc_msgSend)(effect, @selector(effectID));
+            if ([existingID isKindOfClass:[NSString class]] &&
+                [(NSString *)existingID isEqualToString:effectID]) {
+                return YES;
+            }
+        }
+    }
+
+    return NO;
+}
+
+static id FCPBridge_effectDragFindCreatedClip(
+    id timelineModule, NSArray *itemsBefore, NSArray *selectedBefore)
+{
+    NSSet *selectedBeforePointers = FCPBridge_effectDragPointerSet(selectedBefore ?: @[]);
+    NSArray *selectedAfter = FCPBridge_effectDragSelectedItems(timelineModule) ?: @[];
+
+    id firstNewSelected = nil;
+    for (id item in selectedAfter) {
+        if (![selectedBeforePointers containsObject:[NSValue valueWithNonretainedObject:item]]) {
+            if (FCPBridge_effectDragLooksLikeAdjustmentClip(item)) {
+                return item;
+            }
+            if (!firstNewSelected) firstNewSelected = item;
+        }
+    }
+
+    NSSet *beforePointers = FCPBridge_effectDragPointerSet(itemsBefore ?: @[]);
+    NSArray *itemsAfter = FCPBridge_effectDragContainedItems(timelineModule) ?: @[];
+    id firstNewItem = nil;
+    for (id item in itemsAfter) {
+        if (![beforePointers containsObject:[NSValue valueWithNonretainedObject:item]]) {
+            if (FCPBridge_effectDragLooksLikeAdjustmentClip(item)) {
+                return item;
+            }
+            if (!firstNewItem) firstNewItem = item;
+        }
+    }
+
+    if (firstNewSelected) return firstNewSelected;
+    if (firstNewItem) return firstNewItem;
+
+    if ([selectedAfter respondsToSelector:@selector(firstObject)]) {
+        return [selectedAfter firstObject];
+    }
+    return nil;
+}
 
 // Swizzled -[FFAnchoredTimelineModule _validateEffectsDrop:onItem:atIndex:]
 // Original rejects drops when item is the root (empty space). We accept those
@@ -4484,107 +4806,214 @@ static unsigned long long FCPBridge_swizzled_validateEffectsDrop(
     unsigned long long result = ((unsigned long long (*)(id, SEL, id, id, long long))
         sOrigValidateEffectsDrop)(self, _cmd, pasteboard, item, index);
 
+    if (!FCPBridge_isEffectDragAsAdjustmentClipEnabled()) {
+        FCPBridge_clearDraggedEffectState();
+        return result;
+    }
+
     if (result != 0) {
         // Original accepted (drop on a valid clip) — normal behavior
-        sEffectDropOnEmptySpace = NO;
+        FCPBridge_clearDraggedEffectState();
         return result;
     }
 
     // Original rejected. Check if this is a video filter over empty space.
     SEL hasTypeSel = NSSelectorFromString(@"hasEffectsWithType:");
     if (![pasteboard respondsToSelector:hasTypeSel]) {
-        sEffectDropOnEmptySpace = NO;
+        FCPBridge_clearDraggedEffectState();
         return 0;
     }
     BOOL hasVideoFilter = ((BOOL (*)(id, SEL, id))objc_msgSend)(
         pasteboard, hasTypeSel, @"effect.video.filter");
     if (!hasVideoFilter) {
-        sEffectDropOnEmptySpace = NO;
+        FCPBridge_clearDraggedEffectState();
         return 0;
     }
 
     // Check if item is the root item (empty timeline space)
     SEL rootSel = NSSelectorFromString(@"rootItem");
     if (![self respondsToSelector:rootSel]) {
-        sEffectDropOnEmptySpace = NO;
+        FCPBridge_clearDraggedEffectState();
         return 0;
     }
     id rootItem = ((id (*)(id, SEL))objc_msgSend)(self, rootSel);
     if (item != rootItem) {
-        sEffectDropOnEmptySpace = NO;
+        FCPBridge_clearDraggedEffectState();
         return 0;
     }
 
+    NSString *effectID = nil;
+    NSString *effectName = nil;
+    FCPBridge_effectDragExtractEffectInfo(pasteboard, self, &effectID, &effectName);
+
     // Accept the drop — we'll create an adjustment clip in performDragOperation:
     sEffectDropOnEmptySpace = YES;
+    sDraggedEffectID = [effectID copy];
+    sDraggedEffectName = [effectName copy];
+    FCPBridge_log(@"[EffectDrag] Accepting empty-space drop for %@ (%@) at index %lld",
+                  sDraggedEffectName ?: @"<unknown effect>",
+                  sDraggedEffectID ?: @"<no effect id>",
+                  index);
     return 1; // NSDragOperationCopy
 }
 
 // Swizzled -[TLKTimelineView performDragOperation:]
 // Intercepts the drop before FCP's normal handling. When our flag is set,
-// calls connectAdjustmentClip: (creates adjustment clip with the selected effect).
+// temporarily overrides NSApp.keyWindowActiveModule.selectedEffectID so
+// connectAdjustmentClip: takes FCP's normal "effect browser selection" path.
 static char FCPBridge_swizzled_TLKPerformDragOp(id self, SEL _cmd, id draggingInfo) {
-    if (sEffectDropOnEmptySpace) {
-        sEffectDropOnEmptySpace = NO;
-
-        id timelineModule = FCPBridge_getActiveTimelineModule();
-        if (timelineModule) {
-            SEL adjSel = NSSelectorFromString(@"connectAdjustmentClip:");
-            if ([timelineModule respondsToSelector:adjSel]) {
-                FCPBridge_log(@"[EffectDrag] Creating adjustment clip from dropped effect");
-                ((void (*)(id, SEL, id))objc_msgSend)(timelineModule, adjSel, nil);
-                return 1; // YES — drop handled
-            }
-        }
-        // Fallback: let FCP handle it normally
+    if (!FCPBridge_isEffectDragAsAdjustmentClipEnabled()) {
+        FCPBridge_clearDraggedEffectState();
+        goto fallback;
     }
 
+    if (sEffectDropOnEmptySpace) {
+        id timelineModule = FCPBridge_getActiveTimelineModule();
+        if (!timelineModule) {
+            FCPBridge_clearDraggedEffectState();
+            goto fallback;
+        }
+
+        NSString *effectID = [sDraggedEffectID copy];
+        NSString *effectName = [sDraggedEffectName copy];
+        if (effectID.length == 0) {
+            id handlerPb = nil;
+            @try { handlerPb = [timelineModule valueForKey:@"handlerPasteboard"]; } @catch (NSException *e) {}
+            FCPBridge_effectDragExtractEffectInfo(handlerPb, timelineModule, &effectID, &effectName);
+        }
+
+        FCPBridge_log(@"[EffectDrag] Creating adjustment clip with effect: %@ (%@)",
+                      effectName ?: @"<none>", effectID ?: @"<none>");
+
+        // Step 1: Create the adjustment clip at the validated drop position.
+        SEL adjSel = NSSelectorFromString(@"connectAdjustmentClip:");
+        if (![timelineModule respondsToSelector:adjSel]) {
+            FCPBridge_clearDraggedEffectState();
+            goto fallback;
+        }
+        if (effectID.length > 0) {
+            sEffectDragKeyWindowSelectedEffectID = [effectID copy];
+        }
+        ((void (*)(id, SEL, id))objc_msgSend)(timelineModule, adjSel, nil);
+        sEffectDragKeyWindowSelectedEffectID = nil;
+
+        // FCP's native path should have applied the effect and set the clip name.
+        FCPBridge_clearDraggedEffectState();
+        return 1; // YES — drop handled
+    }
+
+fallback:
+    if (!sOrigTLKPerformDragOp) {
+        return 0;
+    }
     return ((char (*)(id, SEL, id))sOrigTLKPerformDragOp)(self, _cmd, draggingInfo);
 }
 
-static void FCPBridge_installEffectDragSwizzles(int attempt) {
-    if (attempt >= 120) {
-        FCPBridge_log(@"[EffectDrag] Classes not available after %d attempts — giving up", attempt);
+static void FCPBridge_scheduleEffectDragInstallRetry(void) {
+    if ((sOrigValidateEffectsDrop && sOrigTLKPerformDragOp) || sEffectDragInstallRetryScheduled) {
+        return;
+    }
+    if (sEffectDragInstallAttempts >= 30) {
+        if (sEffectDragInstallAttempts == 30) {
+            FCPBridge_log(@"[EffectDrag] Giving up on swizzle install after %ld attempts",
+                          (long)sEffectDragInstallAttempts);
+            sEffectDragInstallAttempts++;
+        }
         return;
     }
 
-    Class tlmClass = objc_getClass("FFAnchoredTimelineModule");
-    Class tlkClass = objc_getClass("TLKTimelineView");
+    sEffectDragInstallRetryScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        sEffectDragInstallRetryScheduled = NO;
+        sEffectDragInstallAttempts++;
+        FCPBridge_installEffectDragSwizzlesNow();
+    });
+}
 
-    if (!tlmClass || !tlkClass) {
-        // Frameworks not loaded yet — retry in 2 seconds (up to 4 minutes)
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            FCPBridge_installEffectDragSwizzles(attempt + 1);
-        });
-        return;
-    }
+void FCPBridge_installEffectDragSwizzlesNow(void) {
+    FCPBridge_executeOnMainThread(^{
+        if (sOrigValidateEffectsDrop && sOrigTLKPerformDragOp) {
+            sEffectDragInstallRetryScheduled = NO;
+            return;
+        }
 
-    // Swizzle _validateEffectsDrop:onItem:atIndex: on FFAnchoredTimelineModule
-    SEL valSel = NSSelectorFromString(@"_validateEffectsDrop:onItem:atIndex:");
-    Method valMethod = class_getInstanceMethod(tlmClass, valSel);
-    if (valMethod) {
-        sOrigValidateEffectsDrop = method_setImplementation(valMethod,
-            (IMP)FCPBridge_swizzled_validateEffectsDrop);
-        FCPBridge_log(@"[EffectDrag] Swizzled -[FFAnchoredTimelineModule _validateEffectsDrop:onItem:atIndex:]");
-    } else {
-        FCPBridge_log(@"[EffectDrag] WARNING: _validateEffectsDrop:onItem:atIndex: not found");
-    }
+        Class tlmClass = Nil;
+        Class tlkClass = Nil;
 
-    // Swizzle performDragOperation: on TLKTimelineView
-    SEL perfSel = @selector(performDragOperation:);
-    Method perfMethod = class_getInstanceMethod(tlkClass, perfSel);
-    if (perfMethod) {
-        sOrigTLKPerformDragOp = method_setImplementation(perfMethod,
-            (IMP)FCPBridge_swizzled_TLKPerformDragOp);
-        FCPBridge_log(@"[EffectDrag] Swizzled -[TLKTimelineView performDragOperation:]");
-    } else {
-        FCPBridge_log(@"[EffectDrag] WARNING: performDragOperation: not found on TLKTimelineView");
-    }
+        id activeModule = FCPBridge_getActiveTimelineModule();
+        if (activeModule) {
+            tlmClass = [activeModule class];
+            SEL tvSel = NSSelectorFromString(@"timelineView");
+            if ([activeModule respondsToSelector:tvSel]) {
+                id timelineView = ((id (*)(id, SEL))objc_msgSend)(activeModule, tvSel);
+                if (timelineView) {
+                    tlkClass = [timelineView class];
+                }
+            }
+        }
+
+        if (!tlmClass) tlmClass = FCPBridge_findLoadedClassNamed("FFAnchoredTimelineModule");
+        if (!tlkClass) tlkClass = FCPBridge_findLoadedClassNamed("TLKTimelineView");
+
+        if (!tlmClass || !tlkClass) {
+            if (sEffectDragInstallAttempts == 0) {
+                FCPBridge_log(@"[EffectDrag] Timeline classes not available yet; waiting to install swizzles");
+            }
+            FCPBridge_scheduleEffectDragInstallRetry();
+            return;
+        }
+
+        SEL valSel = NSSelectorFromString(@"_validateEffectsDrop:onItem:atIndex:");
+        Method valMethod = class_getInstanceMethod(tlmClass, valSel);
+        if (!sOrigValidateEffectsDrop && valMethod) {
+            sOrigValidateEffectsDrop = method_setImplementation(
+                valMethod, (IMP)FCPBridge_swizzled_validateEffectsDrop);
+            FCPBridge_log(@"[EffectDrag] Swizzled -[%@ _validateEffectsDrop:onItem:atIndex:]",
+                          NSStringFromClass(tlmClass));
+        }
+
+        SEL perfSel = @selector(performDragOperation:);
+        Method perfMethod = class_getInstanceMethod(tlkClass, perfSel);
+        if (!sOrigTLKPerformDragOp && perfMethod) {
+            sOrigTLKPerformDragOp = method_setImplementation(
+                perfMethod, (IMP)FCPBridge_swizzled_TLKPerformDragOp);
+            FCPBridge_log(@"[EffectDrag] Swizzled -[%@ performDragOperation:]",
+                          NSStringFromClass(tlkClass));
+        }
+
+        Class appClass = [NSApplication class];
+        SEL keyWindowActiveModuleSel = NSSelectorFromString(@"keyWindowActiveModule");
+        Method keyWindowActiveModuleMethod = class_getInstanceMethod(appClass, keyWindowActiveModuleSel);
+        if (!sOrigKeyWindowActiveModule && keyWindowActiveModuleMethod) {
+            sOrigKeyWindowActiveModule = method_setImplementation(
+                keyWindowActiveModuleMethod, (IMP)FCPBridge_swizzled_keyWindowActiveModule);
+            FCPBridge_log(@"[EffectDrag] Swizzled -[NSApplication keyWindowActiveModule]");
+        }
+
+        if (!sOrigValidateEffectsDrop || !sOrigTLKPerformDragOp || !sOrigKeyWindowActiveModule) {
+            FCPBridge_log(@"[EffectDrag] Waiting for swizzles: validate=%@ perform=%@ keyWindowActiveModule=%@",
+                          sOrigValidateEffectsDrop ? @"ok" : @"missing",
+                          sOrigTLKPerformDragOp ? @"ok" : @"missing",
+                          sOrigKeyWindowActiveModule ? @"ok" : @"missing");
+            FCPBridge_scheduleEffectDragInstallRetry();
+            return;
+        }
+
+        sEffectDragInstallRetryScheduled = NO;
+        sEffectDragInstallAttempts = 0;
+    });
 }
 
 void FCPBridge_installEffectDragAsAdjustmentClip(void) {
-    FCPBridge_installEffectDragSwizzles(0);
+    if (!FCPBridge_isEffectDragAsAdjustmentClipEnabled()) {
+        FCPBridge_log(@"[EffectDrag] Install skipped because option is disabled");
+        return;
+    }
+    FCPBridge_log(@"[EffectDrag] Scheduling install");
+    FCPBridge_executeOnMainThreadAsync(^{
+        FCPBridge_installEffectDragSwizzlesNow();
+    });
 }
 
 #pragma mark - Transition Handlers
@@ -6528,6 +6957,9 @@ static NSDictionary *FCPBridge_handleRequest(NSDictionary *request) {
     if (!method) {
         return @{@"error": @{@"code": @(-32600), @"message": @"Invalid Request: method required"}};
     }
+
+    // Lazily install effect-drag swizzles on first RPC call
+    FCPBridge_installEffectDragSwizzlesNow();
 
     NSDictionary *result = nil;
 
