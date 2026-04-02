@@ -165,25 +165,73 @@ Task {
         case .v3: versionName = "v3 (Multilingual)"
         case .tdtCtc110m: versionName = "110M (Compact)"
         }
-        if showProgress { reportProgress(0.05, "Loading Parakeet \(versionName) model...") }
+        // Check if models need downloading
+        let modelDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FluidAudio/Models")
+        let versionFolder: String
+        switch modelVersion {
+        case .v2: versionFolder = "parakeet-tdt-0.6b-v2"
+        case .v3: versionFolder = "parakeet-tdt-0.6b-v3"
+        case .tdtCtc110m: versionFolder = "parakeet-tdt-ctc-110m"
+        }
+        let modelPath = modelDir.appendingPathComponent(versionFolder)
+        let needsDownload = !FileManager.default.fileExists(atPath: modelPath.path) ||
+            (try? FileManager.default.contentsOfDirectory(atPath: modelPath.path))?.count ?? 0 < 3
 
-        let models = try await AsrModels.downloadAndLoad(version: modelVersion)
+        if needsDownload {
+            if showProgress { reportProgress(0.03, "Downloading Parakeet \(versionName) model (~475 MB)... This only happens once.") }
+            printError("INFO: Model not found at \(modelPath.path) — downloading from HuggingFace...")
+        } else {
+            if showProgress { reportProgress(0.05, "Loading Parakeet \(versionName) model (cached)...") }
+        }
 
-        if showProgress { reportProgress(0.15, "Initializing Parakeet...") }
+        let models: AsrModels
+        do {
+            models = try await AsrModels.downloadAndLoad(version: modelVersion)
+        } catch {
+            let errMsg = error.localizedDescription
+            if errMsg.contains("rate") || errMsg.contains("429") || errMsg.contains("503") {
+                printError("Model download rate-limited by HuggingFace. Wait a few minutes and try again.")
+            } else if errMsg.contains("Could not connect") || errMsg.contains("network") || errMsg.contains("NSURLError") {
+                printError("Network error downloading model. Check internet connection. Error: \(errMsg)")
+            } else if errMsg.contains("No space") || errMsg.contains("disk") {
+                printError("Not enough disk space to download model (~475 MB required). Free up space and try again.")
+            } else {
+                printError("Failed to download/load model: \(errMsg)")
+            }
+            printError("TIP: You can manually delete the model cache at ~/Library/Application Support/FluidAudio/Models/ and retry.")
+            throw error
+        }
+
+        if showProgress { reportProgress(0.12, "Compiling neural network for your device...") }
 
         let manager = AsrManager(config: .default)
-        try await manager.initialize(models: models)
+        do {
+            try await manager.initialize(models: models)
+        } catch {
+            printError("Failed to initialize Parakeet engine: \(error.localizedDescription)")
+            printError("TIP: This may happen on Intel Macs (Neural Engine required) or with insufficient RAM.")
+            throw error
+        }
+
+        if showProgress { reportProgress(0.15, "Parakeet ready") }
 
         // Prepare diarizer once if needed (reuse across all files)
         var sharedDiarizer: OfflineDiarizerManager? = nil
         if detectSpeakers {
-            if showProgress { reportProgress(0.18, "Preparing speaker detection models...") }
+            if showProgress { reportProgress(0.17, "Downloading speaker detection models (first time only)...") }
             var config = OfflineDiarizerConfig()
             config.clustering.threshold = 0.45
             config.clustering.minSpeakers = 2
             config.segmentation.stepRatio = 0.1
             sharedDiarizer = OfflineDiarizerManager(config: config)
-            try await sharedDiarizer!.prepareModels()
+            do {
+                try await sharedDiarizer!.prepareModels()
+            } catch {
+                printError("Speaker detection model failed to load: \(error.localizedDescription). Continuing without speaker detection.")
+                sharedDiarizer = nil
+            }
+            if showProgress && sharedDiarizer != nil { reportProgress(0.19, "Speaker detection ready") }
         }
 
         if showProgress { reportProgress(0.20, "Transcribing \(batchEntries.count) file(s)...") }
@@ -277,7 +325,18 @@ Task {
         }
 
     } catch {
-        printError("Transcription failed: \(error.localizedDescription)")
+        let errMsg = error.localizedDescription
+        printError("Transcription failed: \(errMsg)")
+        // Provide actionable guidance based on error type
+        if errMsg.contains("memory") || errMsg.contains("Memory") {
+            printError("TIP: Close other apps to free memory — Parakeet needs ~1 GB RAM.")
+        }
+        if errMsg.contains("CoreML") || errMsg.contains("mlmodel") {
+            printError("TIP: Try deleting ~/Library/Application Support/FluidAudio/Models/ and re-running.")
+        }
+        if errMsg.contains("compute") || errMsg.contains("ANE") || errMsg.contains("Neural Engine") {
+            printError("TIP: Parakeet requires Apple Silicon (M1 or later). Intel Macs are not supported.")
+        }
         exitCode = 1
     }
     semaphore.signal()

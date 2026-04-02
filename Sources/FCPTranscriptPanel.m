@@ -1814,7 +1814,21 @@ static double CMTimeToSeconds(FCPTranscript_CMTime t) {
     NSString *output = [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding];
 
     if (task.terminationStatus != 0) {
-        FCPBridge_log(@"[Transcript] Parakeet build failed (status %d): %@", task.terminationStatus, output);
+        FCPBridge_log(@"[Transcript] Parakeet build failed (exit code %d)", task.terminationStatus);
+        // Log last 500 chars of build output for diagnostics
+        NSString *tail = output.length > 500 ? [output substringFromIndex:output.length - 500] : output;
+        FCPBridge_log(@"[Transcript] Build output (last 500 chars): %@", tail);
+
+        // Check for specific build failures
+        if ([output containsString:@"xcrun: error"] || [output containsString:@"xcode-select"]) {
+            FCPBridge_log(@"[Transcript] CAUSE: Xcode Command Line Tools not installed");
+        } else if ([output containsString:@"no such module"]) {
+            FCPBridge_log(@"[Transcript] CAUSE: Swift package dependency resolution failed — check network");
+        } else if ([output containsString:@"No space left"]) {
+            FCPBridge_log(@"[Transcript] CAUSE: Disk full during build");
+        } else if ([output containsString:@"Cannot find"]) {
+            FCPBridge_log(@"[Transcript] CAUSE: Source files may be corrupted — re-run patcher");
+        }
         return NO;
     }
 
@@ -1836,7 +1850,27 @@ static double CMTimeToSeconds(FCPTranscript_CMTime t) {
             });
         }];
         if (!buildOK) {
-            [self setErrorState:@"Failed to build Parakeet transcriber. Re-run the patcher, or check Xcode Command Line Tools and ~/Library/Caches/FCPBridge/tools/parakeet-transcriber/."];
+            // Check for common causes
+            NSString *xcodeCheck = @"";
+            NSTask *xcTask = [[NSTask alloc] init];
+            xcTask.launchPath = @"/usr/bin/xcode-select";
+            xcTask.arguments = @[@"-p"];
+            NSPipe *xcPipe = [NSPipe pipe];
+            xcTask.standardOutput = xcPipe;
+            xcTask.standardError = xcPipe;
+            @try {
+                [xcTask launch];
+                [xcTask waitUntilExit];
+                if (xcTask.terminationStatus != 0) {
+                    xcodeCheck = @" Xcode Command Line Tools are NOT installed — run: xcode-select --install";
+                }
+            } @catch (NSException *e) {
+                xcodeCheck = @" Could not check for Xcode CLT.";
+            }
+
+            [self setErrorState:[NSString stringWithFormat:
+                @"Failed to build Parakeet transcriber.%@ Re-run the FCPBridge Patcher to fix this.", xcodeCheck]];
+            FCPBridge_log(@"[Transcript] Parakeet build failed.%@ Searched: ~/Library/Caches/FCPBridge/tools/parakeet-transcriber/", xcodeCheck);
             return;
         }
         binaryPath = [self parakeetTranscriberPath];
@@ -1994,7 +2028,27 @@ static double CMTimeToSeconds(FCPTranscript_CMTime t) {
                     });
                 }
             } else if ([line hasPrefix:@"ERROR:"]) {
-                FCPBridge_log(@"[Transcript] Parakeet stderr: %@", line);
+                NSString *errMsg = [line substringFromIndex:6];
+                FCPBridge_log(@"[Transcript] Parakeet: %@", errMsg);
+                // Show actionable errors in the UI too
+                if ([errMsg containsString:@"Network"] || [errMsg containsString:@"network"] ||
+                    [errMsg containsString:@"connect"] || [errMsg containsString:@"internet"]) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self updateStatusUI:@"Parakeet: Network error — check internet connection"];
+                    });
+                } else if ([errMsg containsString:@"rate-limited"] || [errMsg containsString:@"rate limit"]) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self updateStatusUI:@"Parakeet: Download rate-limited — wait a few minutes and retry"];
+                    });
+                } else if ([errMsg containsString:@"disk"] || [errMsg containsString:@"space"]) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self updateStatusUI:@"Parakeet: Not enough disk space (~475 MB needed)"];
+                    });
+                } else if ([errMsg containsString:@"INFO:"]) {
+                    // Informational, just log
+                } else if ([errMsg containsString:@"TIP:"]) {
+                    FCPBridge_log(@"[Transcript] %@", errMsg);
+                }
             }
         }
     };
@@ -2024,7 +2078,28 @@ static double CMTimeToSeconds(FCPTranscript_CMTime t) {
     [[NSFileManager defaultManager] removeItemAtPath:manifestPath error:nil];
 
     if (task.terminationStatus != 0) {
-        [self setErrorState:@"Parakeet transcription failed. Check ~/Library/Logs/FCPBridge/fcpbridge.log"];
+        FCPBridge_log(@"[Transcript] Parakeet process exited with code %d", task.terminationStatus);
+        // Read any remaining stderr for clues
+        NSData *stderrRemaining = [stderrPipe.fileHandleForReading readDataToEndOfFile];
+        NSString *stderrText = [[NSString alloc] initWithData:stderrRemaining encoding:NSUTF8StringEncoding] ?: @"";
+        if (stderrText.length > 0) {
+            FCPBridge_log(@"[Transcript] Parakeet final stderr: %@", stderrText);
+        }
+
+        // Build a user-friendly error from whatever we know
+        NSString *userError = @"Parakeet transcription failed.";
+        if ([stderrText containsString:@"network"] || [stderrText containsString:@"connect"]) {
+            userError = @"Parakeet failed — could not download model. Check your internet connection.";
+        } else if ([stderrText containsString:@"rate-limited"]) {
+            userError = @"Parakeet failed — download rate-limited. Wait a few minutes and try again.";
+        } else if ([stderrText containsString:@"disk"] || [stderrText containsString:@"space"]) {
+            userError = @"Parakeet failed — not enough disk space for model (~475 MB required).";
+        } else if ([stderrText containsString:@"memory"] || [stderrText containsString:@"Memory"]) {
+            userError = @"Parakeet failed — not enough memory. Close other apps and try again.";
+        } else if ([stderrText containsString:@"Intel"] || [stderrText containsString:@"Neural Engine"]) {
+            userError = @"Parakeet requires Apple Silicon (M1+). Use Apple Speech engine instead.";
+        }
+        [self setErrorState:[NSString stringWithFormat:@"%@ Check ~/Library/Logs/FCPBridge/fcpbridge.log for details.", userError]];
         return;
     }
 
