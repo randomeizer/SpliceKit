@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/FCPBridge</key>
 		<data>
-		FzDS6u/7SEp3wM3KZ/vaPvHWFuw=
+		Rs0cmY9oTtXiDKcbbVDMz4arb8Y=
 		</data>
 		<key>Resources/Sources/FCPBridge.h</key>
 		<data>
@@ -46,7 +46,7 @@
 		</data>
 		<key>Resources/Sources/FCPTranscriptPanel.m</key>
 		<data>
-		IikHCeid0yy72Bx1P7TN+QPOYPY=
+		nnH3HalhKJcEwu5xTN/ohac4GXY=
 		</data>
 		<key>Resources/mcp/server.py</key>
 		<data>
@@ -62,11 +62,11 @@
 		</data>
 		<key>Resources/tools/parakeet-transcriber/Sources/main.swift</key>
 		<data>
-		BuhbST/SxDP7JuIU4qEV2/dyLj8=
+		//shv3qnqmot9rtUo0UaFZnIRd4=
 		</data>
 		<key>Resources/tools/silence-detector</key>
 		<data>
-		bdwYhtcK13DJa/hI3mzHHeW7bPE=
+		cIpvXivrn5c5B2oUKH4Ddn403hs=
 		</data>
 		<key>Resources/tools/silence-detector.swift</key>
 		<data>
@@ -95,7 +95,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			B8uPnySMxEZbOd1iCqBNFz4fIn5NGnUKxYX0je/NfFc=
+			KafVSHU4nBuAbm1GG2H2aal61hLxXeZsI07p+1Kr6tI=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPBridge.h</key>
@@ -158,7 +158,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			bqR80JyV1SfAq3DbszMSiwmAr3JIZLdup+mH88EpFYk=
+			cVH/8fJ2YaUKvNPRYIx4tWnXyu0MkgNaIDHrdIEDVq8=
 			</data>
 		</dict>
 		<key>Resources/mcp/server.py</key>
@@ -186,14 +186,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Zu0kXPGrZG2ERlDkV+e+z6Ohux2OgZxK0wM1KQIg6Tw=
+			aHzSJ55u8MEzpnrqOqfiDmcMrLAlrhRII6tCE5lmhGs=
 			</data>
 		</dict>
 		<key>Resources/tools/silence-detector</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			kTaW2nt9Us1C/q7LuBVCfPpqQxuCiouXo4DMuWJGFNU=
+			bw0fxUNpUVRio9inLaNFyGyTDSJAGWjgbRU9jDIGp4Q=
 			</data>
 		</dict>
 		<key>Resources/tools/silence-detector.swift</key>
