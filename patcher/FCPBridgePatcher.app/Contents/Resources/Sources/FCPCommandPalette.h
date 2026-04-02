@@ -21,6 +21,7 @@ typedef NS_ENUM(NSInteger, FCPCommandCategory) {
     FCPCommandCategoryTranscript,
     FCPCommandCategoryExport,
     FCPCommandCategoryAI,
+    FCPCommandCategoryOptions,
 };
 
 @interface FCPCommand : NSObject

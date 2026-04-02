@@ -10,23 +10,23 @@
 		</data>
 		<key>Resources/FCPBridge</key>
 		<data>
-		FDZE4QXTPKL/+URwqYPHHiF9Qck=
+		lk22nR6PS4IUXZ4Sl/z66zs6ywU=
 		</data>
 		<key>Resources/Sources/FCPBridge.h</key>
 		<data>
-		8LdZd+UxryOC3b2gnCd3WSRdwy8=
+		OQKN1LrALiv09ov1we5BXiid0y8=
 		</data>
 		<key>Resources/Sources/FCPBridge.m</key>
 		<data>
-		8nVbfxMtc4CJQFoBm6USCAUlnOE=
+		RL9PyHKXpJM/YnJj7ZZS82PNQ+w=
 		</data>
 		<key>Resources/Sources/FCPBridgeRuntime.m</key>
 		<data>
-		B15JdFRo4pa6XkuGvQoqm1y7rv0=
+		ysY+3gakfQucDijTTb/SQYUHuuQ=
 		</data>
 		<key>Resources/Sources/FCPBridgeServer.m</key>
 		<data>
-		4cdSLIY35odDL40BVPkLbBpt7bU=
+		zbOBa4xhZdLWcog4qn1R6f5hltQ=
 		</data>
 		<key>Resources/Sources/FCPBridgeSwizzle.m</key>
 		<data>
@@ -34,11 +34,11 @@
 		</data>
 		<key>Resources/Sources/FCPCommandPalette.h</key>
 		<data>
-		0iwnbOp/6OWG2aFbHxTzkDGHpbA=
+		6JO6wMEVvJ6mmtOGtFwMhKkj3I8=
 		</data>
 		<key>Resources/Sources/FCPCommandPalette.m</key>
 		<data>
-		bu8XIXjH88mhUkprxx9V9xY4d78=
+		cCuegLv+wMKdth9D3JMVF742jfo=
 		</data>
 		<key>Resources/Sources/FCPTranscriptPanel.h</key>
 		<data>
@@ -46,11 +46,11 @@
 		</data>
 		<key>Resources/Sources/FCPTranscriptPanel.m</key>
 		<data>
-		3NpT+ujNsKtOakQZ7tJe25k8604=
+		IikHCeid0yy72Bx1P7TN+QPOYPY=
 		</data>
 		<key>Resources/mcp/server.py</key>
 		<data>
-		iDMNP31jt28W49haicoTZOgpgRY=
+		d8nlBQhOODFy6y46W/HQXinCmI4=
 		</data>
 		<key>Resources/tools/parakeet-transcriber/Package.resolved</key>
 		<data>
@@ -66,7 +66,7 @@
 		</data>
 		<key>Resources/tools/silence-detector</key>
 		<data>
-		zRD3eIqIXTkgBj/NyVShUErs9+8=
+		iRwk7P0TuAsYBtK5RzIainu3BzU=
 		</data>
 		<key>Resources/tools/silence-detector.swift</key>
 		<data>
@@ -95,35 +95,35 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			z28arzR32n1Qwsa9y62hLM0F/cXQXI/YhUkdaol/52Q=
+			ucDD/kqelvH4Kt332E1tq6+gZHBXpTnnNKTv8XxvF0s=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPBridge.h</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			taRZQiicVxFv8cFu07FFuySY6fzEqA8qpud+Avaycfo=
+			T4zBGwBQBS7uU16ZVe7sohcO3hPz0XKFovTM7A67q0c=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPBridge.m</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			1GzdY1mW3NrW7uF6LjrwHplogHVRuHVz4VqFV4QvlxM=
+			KC57k3lxbG2SJmjKFrkTrktHFxE/lfxMMZaw4gs+zgk=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPBridgeRuntime.m</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			jafOCEPncjq08voLxj0VxUlXXhx5eWourjKEyAvqR6o=
+			byWXgR7LnNrmgA3PG5tyJnlaQgtRUdNz/RfZL8o6USE=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPBridgeServer.m</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			lcbaKM4l1biPfhPYukQxbYu89CijS/jofilX+GKxy7E=
+			UIWvvlrKAJSFybeaFCJ9ruASMk/fjJUDf+h/7F+/m0Y=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPBridgeSwizzle.m</key>
@@ -137,14 +137,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ZzXGHQpdXLu9domCu+I8VHfbIEfw/P2k+ZOyDeleid0=
+			mLPWb1MT/GhKoNrH3TipN+UZvypJYk/36CFbvdWjBfQ=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPCommandPalette.m</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			g6HUbUV6w1tK8ZT0kISCsXr/ACXTbi418umVX/rhnB4=
+			uvx+56Tv2KDlarxq3KQwGPQ03GpzeXKGTK1Yf77kbA4=
 			</data>
 		</dict>
 		<key>Resources/Sources/FCPTranscriptPanel.h</key>
@@ -158,14 +158,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			bycWyV/htd0e7sBNzzYKjh4mFYM0zgzLkl1KlMLoGeM=
+			bqR80JyV1SfAq3DbszMSiwmAr3JIZLdup+mH88EpFYk=
 			</data>
 		</dict>
 		<key>Resources/mcp/server.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			lkgH1dYGBhegQSQhQ7/fmEJf5n7TRKJtdqWLQkuGJ8k=
+			D5HV2ijjNZz2hnbqt7EKyvKS6zqeuEtTF1jCRW3+7gE=
 			</data>
 		</dict>
 		<key>Resources/tools/parakeet-transcriber/Package.resolved</key>
@@ -193,7 +193,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			XPhaL/7Ai76mVh3JFwHIc8jKsEdSkO0BUQEF28ppJ5E=
+			EWcd1s/aXWS1ITC1A3rzqnjKyWE4fSbE4VlIwnrl5Qs=
 			</data>
 		</dict>
 		<key>Resources/tools/silence-detector.swift</key>

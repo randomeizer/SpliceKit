@@ -138,6 +138,7 @@ static void FCPBridge_checkCompatibility(void) {
 + (instancetype)shared;
 - (void)toggleTranscriptPanel:(id)sender;
 - (void)toggleCommandPalette:(id)sender;
+- (void)toggleViewerPinchZoom:(id)sender;
 @property (nonatomic, weak) NSButton *toolbarButton;
 @property (nonatomic, weak) NSButton *paletteToolbarButton;
 @end
@@ -171,6 +172,14 @@ static void FCPBridge_checkCompatibility(void) {
 
 - (void)toggleCommandPalette:(id)sender {
     [[FCPCommandPalette sharedPalette] togglePalette];
+}
+
+- (void)toggleViewerPinchZoom:(id)sender {
+    BOOL newState = !FCPBridge_isViewerPinchZoomEnabled();
+    FCPBridge_setViewerPinchZoomEnabled(newState);
+    if ([sender isKindOfClass:[NSMenuItem class]]) {
+        [(NSMenuItem *)sender setState:newState ? NSControlStateValueOn : NSControlStateValueOff];
+    }
 }
 
 - (void)updateToolbarButtonState:(BOOL)active {
@@ -214,6 +223,23 @@ static void FCPBridge_installMenu(void) {
     paletteItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
     paletteItem.target = [FCPBridgeMenuController shared];
     [bridgeMenu addItem:paletteItem];
+
+    // --- Options submenu ---
+    [bridgeMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenu *optionsMenu = [[NSMenu alloc] initWithTitle:@"Options"];
+
+    NSMenuItem *pinchZoomItem = [[NSMenuItem alloc]
+        initWithTitle:@"Viewer Pinch-to-Zoom"
+               action:@selector(toggleViewerPinchZoom:)
+        keyEquivalent:@""];
+    pinchZoomItem.target = [FCPBridgeMenuController shared];
+    pinchZoomItem.state = FCPBridge_isViewerPinchZoomEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+    [optionsMenu addItem:pinchZoomItem];
+
+    NSMenuItem *optionsMenuItem = [[NSMenuItem alloc] initWithTitle:@"Options" action:nil keyEquivalent:@""];
+    optionsMenuItem.submenu = optionsMenu;
+    [bridgeMenu addItem:optionsMenuItem];
 
     // Add the menu to the menu bar (before the last item which is usually "Help")
     NSMenuItem *bridgeMenuItem = [[NSMenuItem alloc] initWithTitle:@"FCPBridge" action:nil keyEquivalent:@""];
@@ -434,6 +460,15 @@ static void FCPBridge_appDidLaunch(void) {
 
     // Install toolbar button in FCP's main window
     [FCPBridgeMenuController installToolbarButton];
+
+    // Install transition freeze-extend swizzle (adds "Use Freeze Frames" button
+    // to the "not enough extra media" dialog)
+    FCPBridge_installTransitionFreezeExtendSwizzle();
+
+    // Install viewer pinch-to-zoom if previously enabled
+    if (FCPBridge_isViewerPinchZoomEnabled()) {
+        FCPBridge_installViewerPinchZoom();
+    }
 
     // Start the control server on a background thread
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

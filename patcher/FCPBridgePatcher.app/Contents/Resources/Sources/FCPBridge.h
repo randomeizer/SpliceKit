@@ -55,6 +55,17 @@ NSDictionary *FCPBridge_listHandles(void);
 void FCPBridge_startControlServer(void);
 void FCPBridge_broadcastEvent(NSDictionary *event);
 
+#pragma mark - Transition Freeze Extend
+
+void FCPBridge_installTransitionFreezeExtendSwizzle(void);
+
+#pragma mark - Viewer Pinch-to-Zoom
+
+void FCPBridge_installViewerPinchZoom(void);
+void FCPBridge_removeViewerPinchZoom(void);
+void FCPBridge_setViewerPinchZoomEnabled(BOOL enabled);
+BOOL FCPBridge_isViewerPinchZoomEnabled(void);
+
 #pragma mark - Cached Class References
 
 extern Class FCPBridge_FFAnchoredTimelineModule;
