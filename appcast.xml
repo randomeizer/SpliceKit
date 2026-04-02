@@ -6,6 +6,26 @@
     <description>FCPBridge Patcher release updates</description>
     <language>en</language>
     <item>
+      <title>FCPBridge v2.7.0 — Batch Export</title>
+      <sparkle:version>2.7.0</sparkle:version>
+      <sparkle:shortVersionString>2.7.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 02 Apr 2026 01:00:00 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 2.7.0</h2>
+        <ul>
+          <li><b>Batch Export</b> — Export each timeline clip individually to a folder. Pick a folder once, all clips export automatically with effects baked in. No dialogs per clip.</li>
+          <li><b>Set Timeline Range</b> — Programmatically set in/out marks via MCP or command palette</li>
+          <li><b>Clip Positions</b> — Timeline clips now include absolute start/end times</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/elliotttate/FCPBridge/releases/download/v2.7.0/FCPBridgePatcher-v2.7.0.zip"
+        sparkle:edSignature="6n67XJJMQ/SWovuDoFEsfrH6j50H1xnj1TZoTq6bULI7p7zpDvw6Oq8+dsoG2aqsYxEs1WbHt4m0Iy7KH2HYBg=="
+        length="2919553"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>FCPBridge v2.6.1 — Fix Parakeet in release patcher</title>
       <sparkle:version>2.6.1</sparkle:version>
       <sparkle:shortVersionString>2.6.1</sparkle:shortVersionString>
