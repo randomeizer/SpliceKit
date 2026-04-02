@@ -717,8 +717,9 @@ NSDictionary *FCPBridge_handleTimelineGetDetailedState(NSDictionary *params) {
 
             // Contained items - FCP uses spine model: sequence -> primaryObject (collection) -> items
             id itemsSource = nil;
+            id primaryObj = nil;
             if ([sequence respondsToSelector:@selector(primaryObject)]) {
-                id primaryObj = ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(primaryObject));
+                primaryObj = ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(primaryObject));
                 if (primaryObj && [primaryObj respondsToSelector:@selector(containedItems)]) {
                     itemsSource = ((id (*)(id, SEL))objc_msgSend)(primaryObj, @selector(containedItems));
                 }
@@ -735,6 +736,11 @@ NSDictionary *FCPBridge_handleTimelineGetDetailedState(NSDictionary *params) {
                     state[@"itemCount"] = @(arr.count);
                     NSMutableArray *itemList = [NSMutableArray array];
                     NSInteger count = MIN((NSInteger)arr.count, limit);
+
+                    // Check if container supports effectiveRangeOfObject: for absolute positions
+                    SEL erSel = NSSelectorFromString(@"effectiveRangeOfObject:");
+                    BOOL canGetRange = primaryObj && [primaryObj respondsToSelector:erSel];
+
                     for (NSInteger i = 0; i < count; i++) {
                         id item = arr[i];
                         NSMutableDictionary *info = [NSMutableDictionary dictionary];
@@ -769,6 +775,26 @@ NSDictionary *FCPBridge_handleTimelineGetDetailedState(NSDictionary *params) {
                         if ([item respondsToSelector:trimOffSel]) {
                             FCPBridge_CMTime t = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(item, trimOffSel);
                             info[@"trimmedOffset"] = FCPBridge_serializeCMTime(t);
+                        }
+
+                        // Absolute position in timeline via effectiveRangeOfObject:
+                        if (canGetRange) {
+                            @try {
+                                FCPBridge_CMTimeRange range = ((FCPBridge_CMTimeRange (*)(id, SEL, id))objc_msgSend)(
+                                    primaryObj, erSel, item);
+                                info[@"startTime"] = FCPBridge_serializeCMTime(range.start);
+                                // Compute end time = start + duration
+                                FCPBridge_CMTime endTime = range.start;
+                                if (range.duration.timescale == range.start.timescale) {
+                                    endTime.value = range.start.value + range.duration.value;
+                                } else if (range.duration.timescale > 0) {
+                                    endTime.value = range.start.value +
+                                        (range.duration.value * range.start.timescale / range.duration.timescale);
+                                }
+                                info[@"endTime"] = FCPBridge_serializeCMTime(endTime);
+                            } @catch (NSException *e) {
+                                // Silently skip if effectiveRangeOfObject: fails for this item
+                            }
                         }
 
                         [itemList addObject:info];
@@ -1167,6 +1193,8 @@ NSDictionary *FCPBridge_handleTimelineAction(NSDictionary *params) {
         @"retimeHold":       @"retimeHoldFromSelection:",
         @"freezeFrame":      @"freezeFrame:",
         @"retimeBladeSpeed": @"retimeBladeSpeed:",
+        @"retimeSpeedRampToZero": @"retimeSpeedRampToZero:",
+        @"retimeSpeedRampFromZero": @"retimeSpeedRampFromZero:",
 
         // Generators
         @"addVideoGenerator": @"addVideoGenerator:",
@@ -1174,6 +1202,11 @@ NSDictionary *FCPBridge_handleTimelineAction(NSDictionary *params) {
         // Export/Share
         @"exportXML":        @"exportXML:",
         @"shareSelection":   @"shareSelection:",
+
+        // Range selection (in/out points)
+        @"setRangeStart":    @"setRangeStart:",
+        @"setRangeEnd":      @"setRangeEnd:",
+        @"clearRange":       @"clearRange:",
 
         // Keyframes
         @"addKeyframe":      @"addKeyframe:",
@@ -1195,19 +1228,33 @@ NSDictionary *FCPBridge_handleTimelineAction(NSDictionary *params) {
         @"detachAudio":      @"detachAudio:",
         @"breakApartClipItems": @"breakApartClipItems:",
         @"removeEffects":    @"removeEffects:",
-        @"liftFromPrimaryStoryline": @"liftFromPrimaryStoryline:",
-        @"overwriteToPrimaryStoryline": @"overwriteToPrimaryStoryline:",
+        @"liftFromPrimaryStoryline": @"liftFromSpine:",
+        @"overwriteToPrimaryStoryline": @"collapseToSpine:",
         @"createStoryline":  @"createStoryline:",
+        @"collapseToConnectedStoryline": @"collapseToConnectedStoryline:",
 
         // Timeline view
         @"zoomToFit":        @"zoomToFit:",
         @"zoomIn":           @"zoomIn:",
         @"zoomOut":          @"zoomOut:",
+        @"verticalZoomToFit": @"verticalZoomToFit:",
+        @"zoomToSamples":    @"zoomToSamples:",
         @"toggleSnapping":   @"toggleSnapping:",
         @"toggleSkimming":   @"toggleSkimming:",
+        @"toggleClipSkimming": @"toggleItemSkimming:",
+        @"toggleAudioSkimming": @"toggleAudioScrubbingDown:",
         @"toggleInspector":  @"toggleInspector:",
         @"toggleTimeline":   @"toggleTimeline:",
         @"toggleTimelineIndex": @"toggleTimelineIndex:",
+        @"toggleInspectorHeight": @"toggleInspectorHeight:",
+        @"showPrecisionEditor": @"showPrecisionEditor:",
+        @"showAudioLanes":   @"showAudioLanes:",
+        @"expandSubroles":   @"expandSubroles:",
+        @"timelineHistoryBack": @"timelineHistoryBack:",
+        @"timelineHistoryForward": @"timelineHistoryForward:",
+        @"beatDetectionGrid": @"toggleBeatDetectionGrid:",
+        @"timelineScrolling": @"toggleTimelineScrolling:",
+        @"enterFullScreen":  @"toggleFullScreen:",
 
         // Render
         @"renderSelection":  @"renderSelection:",
@@ -1218,6 +1265,213 @@ NSDictionary *FCPBridge_handleTimelineAction(NSDictionary *params) {
 
         // Analysis
         @"analyzeAndFix":    @"analyzeAndFix:",
+
+        // Edit modes (insert/append/overwrite/connect)
+        @"connectToPrimaryStoryline": @"anchorWithSelectedMedia:",
+        @"insertEdit":       @"insertWithSelectedMedia:",
+        @"appendEdit":       @"appendWithSelectedMedia:",
+        @"overwriteEdit":    @"overwriteWithSelectedMedia:",
+
+        // Paste variants
+        @"pasteAsConnected": @"pasteAnchored:",
+        @"pasteEffects":     @"pasteEffects:",
+        @"pasteAttributes":  @"pasteAttributes:",
+        @"removeAttributes": @"removeAttributes:",
+        @"copyAttributes":   @"copyAttributes:",
+
+        // Replace/delete variants
+        @"replaceWithGap":   @"shiftDelete:",
+        @"deleteSelection":  @"deleteSelection:",
+
+        // Trim operations
+        @"trimStart":        @"trimStart:",
+        @"trimEnd":          @"trimEnd:",
+        @"joinClips":        @"joinSelection:",
+
+        // Nudge
+        @"nudgeLeft":        @"nudgeLeft:",
+        @"nudgeRight":       @"nudgeRight:",
+        @"nudgeUp":          @"nudgeUp:",
+        @"nudgeDown":        @"nudgeDown:",
+
+        // Rating
+        @"favorite":         @"favorite:",
+        @"reject":           @"reject:",
+        @"unrate":           @"unfavorite:",
+
+        // Mark/Range
+        @"setClipRange":     @"selectClip:",
+        @"copyTimecode":     @"copyTimecode:",
+
+        // Project operations
+        @"duplicateProject": @"duplicate:",
+        @"snapshotProject":  @"snapshotProject:",
+
+        // Audio operations
+        @"expandAudio":      @"splitEdit:",
+        @"expandAudioComponents": @"toggleAudioComponents:",
+        @"addChannelEQ":     @"addChannelEQ:",
+        @"enhanceAudio":     @"enhanceAudio:",
+        @"matchAudio":       @"matchAudio:",
+
+        // Show/hide editors
+        @"showVideoAnimation": @"showTimelineCurveEditor:",
+        @"showAudioAnimation": @"showTimelineCurveEditor:",
+        @"soloAnimation":    @"collapseTimelineCurveEditor:",
+        @"showTrackingEditor": @"showTrackingEditor:",
+        @"showCinematicEditor": @"showCinematicEditor:",
+        @"showMagneticMaskEditor": @"showMagneticMaskEditor:",
+        @"enableBeatDetection": @"enableBeatDetection:",
+
+        // Clip operations
+        @"synchronizeClips": @"mergeClips:",
+        @"openClip":         @"openInTimeline:",
+        @"renameClip":       @"renameClip:",
+        @"addToSoloedClips": @"addToSoloedClips:",
+        @"referenceNewParentClip": @"referenceNewParentClip:",
+
+        // Color correction extras
+        @"balanceColor":     @"toggleBalanceColor:",
+        @"matchColor":       @"matchColor:",
+        @"addMagneticMask":  @"addObjectMaskEffect:",
+        @"smartConform":     @"autoReframe:",
+        @"enhanceLightAndColor": @"enhanceLightAndColor:",
+
+        // Adjustment clip
+        @"addAdjustmentClip": @"connectAdjustmentClip:",
+
+        // Voiceover
+        @"recordVoiceover":  @"toggleVoiceoverRecordView:",
+
+        // Window/workspace
+        @"backgroundTasks":  @"goToBackgroundTaskList:",
+        @"showDuplicateRanges": @"showDuplicateRanges:",
+
+        // Roles
+        @"editRoles":        @"editRoles:",
+
+        // Change duration
+        @"changeDuration":   @"showTimecodeEntryDuration:",
+
+        // Keywords
+        @"showKeywordEditor": @"toggleKeywordEditor:",
+        @"removeAllKeywords": @"removeAllKeywords:",
+        @"removeAnalysisKeywords": @"removeAnalysisKeywords:",
+
+        // Hide clip
+        @"hideClip":         @"hideClip:",
+
+        // Audition
+        @"createAudition":   @"createAudition:",
+        @"finalizeAudition": @"finalizeAudition:",
+        @"nextAuditionPick": @"nextAuditionPick:",
+        @"previousAuditionPick": @"previousAuditionPick:",
+
+        // Captions
+        @"addCaption":       @"addCaption:",
+        @"splitCaption":     @"splitCaptions:",
+        @"resolveOverlaps":  @"resolveCaptionOverlaps:",
+
+        // Multicam
+        @"createMulticamClip": @"createMulticamClip:",
+
+        // Source media
+        @"revealInBrowser":  @"revealSourceInBrowser:",
+        @"revealProjectInBrowser": @"revealProjectInBrowser:",
+        @"revealInFinder":   @"revealInFinder:",
+        @"moveToTrash":      @"moveToTrash:",
+
+        // Library
+        @"closeLibrary":     @"closeLibrary:",
+        @"libraryProperties": @"showLibraryProperties:",
+        @"consolidateEventMedia": @"consolidateEventMedia:",
+        @"mergeEvents":      @"mergeEvents:",
+        @"deleteGeneratedFiles": @"deleteGeneratedFiles:",
+
+        // Find
+        @"find":             @"performFindPanelAction:",
+        @"findAndReplaceTitle": @"findAndReplaceTitleText:",
+
+        // Project properties
+        @"projectProperties": @"showProjectProperties:",
+
+        // Edit modes - audio/video only
+        @"insertEditAudio":  @"insertWithSelectedMediaAudio:",
+        @"insertEditVideo":  @"insertWithSelectedMediaVideo:",
+        @"appendEditAudio":  @"appendWithSelectedMediaAudio:",
+        @"appendEditVideo":  @"appendWithSelectedMediaVideo:",
+        @"overwriteEditAudio": @"overwriteWithSelectedMediaAudio:",
+        @"overwriteEditVideo": @"overwriteWithSelectedMediaVideo:",
+        @"connectEditAudio": @"anchorWithSelectedMediaAudio:",
+        @"connectEditVideo": @"anchorWithSelectedMediaVideo:",
+        @"connectEditBacktimed": @"anchorWithSelectedMediaBacktimed:",
+
+        // Replace edits
+        @"replaceFromStart": @"replaceWithSelectedMediaFromStart:",
+        @"replaceFromEnd":   @"replaceWithSelectedMediaFromEnd:",
+        @"replaceWhole":     @"replaceWithSelectedMediaWhole:",
+
+        // Retiming extras
+        @"retimeCustomSpeed": @"retimeCustomSpeed:",
+        @"retimeInstantReplayHalf": @"retimeInstantReplayHalf:",
+        @"retimeInstantReplayQuarter": @"retimeInstantReplayQuarter:",
+        @"retimeReset":      @"retimeReset:",
+        @"retimeOpticalFlow": @"retimeTurnOnOpticalFlow:",
+        @"retimeFrameBlending": @"retimeTurnOnSmoothTransition:",
+        @"retimeFloorFrame": @"retimeTurnOnFloorFrameSampling:",
+
+        // AV edit mode
+        @"avEditModeAudio":  @"avEditModeAudio:",
+        @"avEditModeVideo":  @"avEditModeVideo:",
+        @"avEditModeBoth":   @"avEditModeBoth:",
+
+        // Keyword groups
+        @"addKeywordGroup1": @"addKeywordGroup1:",
+        @"addKeywordGroup2": @"addKeywordGroup2:",
+        @"addKeywordGroup3": @"addKeywordGroup3:",
+        @"addKeywordGroup4": @"addKeywordGroup4:",
+        @"addKeywordGroup5": @"addKeywordGroup5:",
+        @"addKeywordGroup6": @"addKeywordGroup6:",
+        @"addKeywordGroup7": @"addKeywordGroup7:",
+
+        // Color correction navigation
+        @"nextColorEffect":  @"nextColorEffect:",
+        @"previousColorEffect": @"previousColorEffect:",
+        @"resetColorBoard":  @"resetPucksOnCurrentBoard:",
+        @"toggleAllColorOff": @"toggleAllColorCorrectionOff:",
+
+        // Paste attribute variants
+        @"pasteAllAttributes": @"pasteAllAttributes:",
+
+        // Audio extras
+        @"alignAudioToVideo": @"alignAudioToVideo:",
+        @"volumeMute":       @"volumeMinusInfinity:",
+        @"addDefaultAudioEffect": @"addDefaultAudioEffect:",
+        @"addDefaultVideoEffect": @"addDefaultVideoEffect:",
+        @"applyAudioFades":  @"applyAudioFades:",
+
+        // Effects toggles
+        @"toggleSelectedEffectsOff": @"toggleSelectedEffectsOff:",
+        @"toggleDuplicateDetection": @"toggleDupeDetection:",
+
+        // Clip extras
+        @"makeClipsUnique":  @"makeClipsUnique:",
+        @"enableDisable":    @"enableOrDisableEdit:",
+        @"transcodeMedia":   @"transcodeMedia:",
+
+        // Navigation extras
+        @"selectNextItem":   @"selectNextItem:",
+        @"selectUpperItem":  @"selectUpperItem:",
+
+        // View extras
+        @"togglePrecisionEditor": @"togglePrecisionEditor:",
+        @"goToInspector":    @"goToInspector:",
+        @"goToTimeline":     @"goToTimeline:",
+        @"goToViewer":       @"goToViewer:",
+        @"goToColorBoard":   @"goToColorBoard:",
+
+        // Preferences
+        @"showPreferences":  @"showPreferences:",
     };
 
     // Undo/redo go through the document's FFUndoManager
@@ -1392,6 +1646,13 @@ NSDictionary *FCPBridge_handlePlayback(NSDictionary *params) {
         @"nextFrame10":       @"stepForward10Frames:",
         @"prevFrame10":       @"stepBackward10Frames:",
         @"playAroundCurrent": @"playAroundCurrentFrame:",
+        @"playFromStart":    @"playFromStart:",
+        @"playInToOut":      @"playInToOut:",
+        @"playReverse":      @"playReverse:",
+        @"stopPlaying":      @"stopPlaying:",
+        @"loop":             @"loop:",
+        @"fastForward":      @"fastForward:",
+        @"rewind":           @"rewind:",
     };
 
     NSString *selector = actionMap[action];
@@ -1461,6 +1722,777 @@ NSDictionary *FCPBridge_handlePlaybackSeek(NSDictionary *params) {
         }
     });
     return result ?: @{@"error": @"Failed to seek"};
+}
+
+NSDictionary *FCPBridge_handlePlaybackGetPosition(NSDictionary *params) {
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (!timeline) { result = @{@"error": @"No active timeline module"}; return; }
+
+            // Read playhead time
+            SEL phSel = NSSelectorFromString(@"playheadTime");
+            if ([timeline respondsToSelector:phSel]) {
+                FCPBridge_CMTime pht = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(timeline, phSel);
+                double seconds = (pht.timescale > 0) ? (double)pht.value / pht.timescale : 0;
+
+                NSMutableDictionary *r = [NSMutableDictionary dictionary];
+                r[@"seconds"] = @(seconds);
+                r[@"time"] = FCPBridge_serializeCMTime(pht);
+
+                // Also get sequence duration for context
+                SEL seqSel = @selector(sequence);
+                if ([timeline respondsToSelector:seqSel]) {
+                    id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, seqSel);
+                    if (sequence && [sequence respondsToSelector:@selector(duration)]) {
+                        FCPBridge_CMTime dur = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(sequence, @selector(duration));
+                        r[@"duration"] = FCPBridge_serializeCMTime(dur);
+                    }
+                    // Frame rate
+                    SEL fdSel = NSSelectorFromString(@"frameDuration");
+                    if (sequence && [sequence respondsToSelector:fdSel]) {
+                        FCPBridge_CMTime fd = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(sequence, fdSel);
+                        if (fd.timescale > 0 && fd.value > 0) {
+                            r[@"frameRate"] = @((double)fd.timescale / fd.value);
+                            r[@"frameDuration"] = FCPBridge_serializeCMTime(fd);
+                        }
+                    }
+                }
+
+                // Check if playing
+                SEL playSel = NSSelectorFromString(@"isPlaying");
+                if ([timeline respondsToSelector:playSel]) {
+                    BOOL playing = ((BOOL (*)(id, SEL))objc_msgSend)(timeline, playSel);
+                    r[@"isPlaying"] = @(playing);
+                }
+
+                result = r;
+            } else {
+                result = @{@"error": @"Cannot read playhead time"};
+            }
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Failed to get position"};
+}
+
+#pragma mark - Range Selection & Batch Export
+
+// Helper: build a CMTime from seconds using the sequence timescale
+static FCPBridge_CMTime FCPBridge_buildCMTime(double seconds, id timeline) {
+    int32_t timescale = 24000; // default
+    SEL seqSel = @selector(sequence);
+    if ([timeline respondsToSelector:seqSel]) {
+        id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, seqSel);
+        if (sequence) {
+            SEL fdSel = NSSelectorFromString(@"frameDuration");
+            if ([sequence respondsToSelector:fdSel]) {
+                FCPBridge_CMTime fd = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(sequence, fdSel);
+                if (fd.timescale > 0) timescale = fd.timescale;
+            }
+        }
+    }
+    FCPBridge_CMTime t;
+    t.value = (int64_t)(seconds * timescale);
+    t.timescale = timescale;
+    t.flags = 1; // kCMTimeFlags_Valid
+    t.epoch = 0;
+    return t;
+}
+
+// Helper: simulate a key press in FCP (posts key down + key up events)
+static void FCPBridge_simulateKeyPress(unsigned short keyCode, NSString *chars, NSEventModifierFlags mods) {
+    id app = ((id (*)(id, SEL))objc_msgSend)(
+        objc_getClass("NSApplication"), @selector(sharedApplication));
+    id window = ((id (*)(id, SEL))objc_msgSend)(app, @selector(mainWindow));
+    NSInteger winNum = window ? [(NSWindow *)window windowNumber] : 0;
+
+    NSEvent *keyDown = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                        location:NSZeroPoint
+                                   modifierFlags:mods
+                                       timestamp:[[NSProcessInfo processInfo] systemUptime]
+                                    windowNumber:winNum
+                                         context:nil
+                                      characters:chars
+                     charactersIgnoringModifiers:chars
+                                       isARepeat:NO
+                                         keyCode:keyCode];
+    [app sendEvent:keyDown];
+
+    NSEvent *keyUp = [NSEvent keyEventWithType:NSEventTypeKeyUp
+                                      location:NSZeroPoint
+                                 modifierFlags:mods
+                                     timestamp:[[NSProcessInfo processInfo] systemUptime]
+                                  windowNumber:winNum
+                                       context:nil
+                                    characters:chars
+                   charactersIgnoringModifiers:chars
+                                     isARepeat:NO
+                                       keyCode:keyCode];
+    [app sendEvent:keyUp];
+}
+
+// Helper: seek playhead and mark in/out using simulated key presses
+static BOOL FCPBridge_seekAndMark(id timeline, FCPBridge_CMTime time, NSString *actionSelector) {
+    // Seek playhead
+    SEL setSel = @selector(setPlayheadTime:);
+    if (![timeline respondsToSelector:setSel]) return NO;
+    ((void (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(timeline, setSel, time);
+
+    // Let FCP update playhead position
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+
+    // Simulate key press: 'I' (keyCode 34) for mark in, 'O' (keyCode 31) for mark out
+    if ([actionSelector isEqualToString:@"setRangeStart:"]) {
+        FCPBridge_simulateKeyPress(34, @"i", 0); // 'I' key = mark in
+    } else if ([actionSelector isEqualToString:@"setRangeEnd:"]) {
+        FCPBridge_simulateKeyPress(31, @"o", 0); // 'O' key = mark out
+    } else if ([actionSelector isEqualToString:@"clearRange:"]) {
+        FCPBridge_simulateKeyPress(7, @"x", NSEventModifierFlagOption); // Option+X = clear range
+    } else {
+        // Fallback: try responder chain
+        id app = ((id (*)(id, SEL))objc_msgSend)(
+            objc_getClass("NSApplication"), @selector(sharedApplication));
+        SEL actionSel = NSSelectorFromString(actionSelector);
+        return ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
+            app, @selector(sendAction:to:from:), actionSel, nil, nil);
+    }
+
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    return YES;
+}
+
+static NSDictionary *FCPBridge_handleSetRange(NSDictionary *params) {
+    NSNumber *startSec = params[@"startSeconds"];
+    NSNumber *endSec = params[@"endSeconds"];
+    if (!startSec || !endSec) {
+        return @{@"error": @"startSeconds and endSeconds parameters required"};
+    }
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (!timeline) {
+                result = @{@"error": @"No active timeline module"};
+                return;
+            }
+
+            double startVal = [startSec doubleValue];
+            double endVal = [endSec doubleValue];
+
+            // Build CMTimes
+            FCPBridge_CMTime startTime = FCPBridge_buildCMTime(startVal, timeline);
+            FCPBridge_CMTime endTime = FCPBridge_buildCMTime(endVal, timeline);
+
+            // Seek to start, mark in
+            BOOL inOk = FCPBridge_seekAndMark(timeline, startTime, @"setRangeStart:");
+            // Seek to end, mark out
+            BOOL outOk = FCPBridge_seekAndMark(timeline, endTime, @"setRangeEnd:");
+
+            result = @{
+                @"status": @"ok",
+                @"startSeconds": @(startVal),
+                @"endSeconds": @(endVal),
+                @"rangeStartSet": @(inOk),
+                @"rangeEndSet": @(outOk),
+            };
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Failed to set range"};
+}
+
+// Helper: collect exportable clips with their time ranges (no ARC-managed ObjC objects in the mix)
+static NSArray *FCPBridge_collectExportableClips(id primaryObj, NSSet *selectedSet) {
+    SEL erSel = NSSelectorFromString(@"effectiveRangeOfObject:");
+    if (![primaryObj respondsToSelector:erSel]) return nil;
+
+    NSArray *allItems = ((id (*)(id, SEL))objc_msgSend)(primaryObj, @selector(containedItems));
+    if (![allItems isKindOfClass:[NSArray class]]) return nil;
+
+    Class transitionClass = objc_getClass("FFAnchoredTransition");
+    NSMutableArray *clips = [NSMutableArray array];
+
+    for (id item in allItems) {
+        if (transitionClass && [item isKindOfClass:transitionClass]) continue;
+        NSString *className = NSStringFromClass([item class]);
+        if ([className containsString:@"Gap"]) continue;
+        if (selectedSet && ![selectedSet containsObject:item]) continue;
+
+        @try {
+            FCPBridge_CMTimeRange range = ((FCPBridge_CMTimeRange (*)(id, SEL, id))objc_msgSend)(
+                primaryObj, erSel, item);
+            NSString *name = @"Untitled";
+            if ([item respondsToSelector:@selector(displayName)]) {
+                id n = ((id (*)(id, SEL))objc_msgSend)(item, @selector(displayName));
+                if (n) name = n;
+            }
+            FCPBridge_CMTime endTime = range.start;
+            if (range.duration.timescale == range.start.timescale) {
+                endTime.value = range.start.value + range.duration.value;
+            } else if (range.duration.timescale > 0) {
+                endTime.value = range.start.value +
+                    (range.duration.value * range.start.timescale / range.duration.timescale);
+            }
+            [clips addObject:@{
+                @"name": name,
+                @"startTime": FCPBridge_serializeCMTime(range.start),
+                @"endTime": FCPBridge_serializeCMTime(endTime),
+                @"startCMTime": [NSValue valueWithBytes:&range.start objCType:@encode(FCPBridge_CMTime)],
+                @"endCMTime": [NSValue valueWithBytes:&endTime objCType:@encode(FCPBridge_CMTime)],
+            }];
+        } @catch (NSException *e) { /* skip */ }
+    }
+    return clips;
+}
+
+// --- Batch Export: swizzle approach ---
+// We swizzle FFSequenceExporter's showSharePanelWithSources:... to skip the modal dialog
+// and directly queue the export. The original method creates a share panel, runs it modally,
+// then queues batches. Our replacement creates the panel silently, extracts batches, and queues.
+
+static NSURL *sBatchExportFolderURL = nil;
+static NSString *sBatchExportFileName = nil;
+static BOOL sBatchExportActive = NO;
+static IMP sOrigShowSharePanel = NULL;
+static NSInteger sBatchExportPendingCount = 0; // tracks async exports still running
+static FCPBridge_CMTime sBatchExportClipStart;
+static FCPBridge_CMTime sBatchExportClipEnd;
+
+// Swizzle NSWorkspace openURL: to suppress auto-open of exported files
+static IMP sOrigOpenURL = NULL;
+static BOOL FCPBridge_swizzled_openURL(id self, SEL _cmd, id url) {
+    if (sBatchExportPendingCount > 0 && url && [url isKindOfClass:[NSURL class]]) {
+        // Suppress opening files from the batch export folder
+        NSString *path = [(NSURL *)url path];
+        NSString *folderPath = [sBatchExportFolderURL path];
+        if (folderPath && [path hasPrefix:folderPath]) {
+            FCPBridge_log(@"[BatchExport] Suppressed auto-open: %@", path);
+            sBatchExportPendingCount--;
+            return YES; // pretend we opened it
+        }
+    }
+    // Call original
+    return sOrigOpenURL ? ((BOOL (*)(id, SEL, id))sOrigOpenURL)(self, _cmd, url) : NO;
+}
+
+// Also suppress activateFileViewerSelectingURLs: (Reveal in Finder)
+static IMP sOrigRevealURLs = NULL;
+static void FCPBridge_swizzled_revealURLs(id self, SEL _cmd, id urls) {
+    if (sBatchExportPendingCount > 0 && urls) {
+        FCPBridge_log(@"[BatchExport] Suppressed reveal in Finder");
+        return;
+    }
+    if (sOrigRevealURLs) ((void (*)(id, SEL, id))sOrigRevealURLs)(self, _cmd, urls);
+}
+
+// Suppress openURL:configuration:completionHandler: (modern API)
+static IMP sOrigOpenURLConfig = NULL;
+static void FCPBridge_swizzled_openURLConfig(id self, SEL _cmd, id url, id config, id handler) {
+    if (sBatchExportPendingCount > 0 && url && [url isKindOfClass:[NSURL class]]) {
+        NSString *path = [(NSURL *)url path];
+        NSString *folderPath = [sBatchExportFolderURL path];
+        if (folderPath && [path hasPrefix:folderPath]) {
+            FCPBridge_log(@"[BatchExport] Suppressed openURL:config: %@", path);
+            sBatchExportPendingCount--;
+            if (handler) ((void (^)(id, id))handler)(nil, nil);
+            return;
+        }
+    }
+    if (sOrigOpenURLConfig) ((void (*)(id, SEL, id, id, id))sOrigOpenURLConfig)(self, _cmd, url, config, handler);
+}
+
+// Suppress openURLs:withApplicationAtURL:configuration:completionHandler:
+static IMP sOrigOpenURLs = NULL;
+static void FCPBridge_swizzled_openURLs(id self, SEL _cmd, id urls, id appURL, id config, id handler) {
+    if (sBatchExportPendingCount > 0 && urls) {
+        FCPBridge_log(@"[BatchExport] Suppressed openURLs: batch");
+        sBatchExportPendingCount--;
+        if (handler) ((void (^)(id, id))handler)(nil, nil);
+        return;
+    }
+    if (sOrigOpenURLs) ((void (*)(id, SEL, id, id, id, id))sOrigOpenURLs)(self, _cmd, urls, appURL, config, handler);
+}
+
+// Suppress openFile: (deprecated but still used)
+static IMP sOrigOpenFile = NULL;
+static BOOL FCPBridge_swizzled_openFile(id self, SEL _cmd, id path) {
+    if (sBatchExportPendingCount > 0 && path) {
+        NSString *folderPath = [sBatchExportFolderURL path];
+        if (folderPath && [(NSString *)path hasPrefix:folderPath]) {
+            sBatchExportPendingCount--;
+            return YES;
+        }
+    }
+    return sOrigOpenFile ? ((BOOL (*)(id, SEL, id))sOrigOpenFile)(self, _cmd, path) : NO;
+}
+
+// Replacement for -[FFSequenceExporter showSharePanelWithSources:destination:destinationURL:parentWindow:]
+// Called after shareToDestination:parentWindow: has already converted sources to CK format
+static void FCPBridge_swizzled_showSharePanel(id self, SEL _cmd, id sources, id dest, id destURL, id parentWindow) {
+    if (!sBatchExportActive) {
+        // Not in batch mode - call original
+        if (sOrigShowSharePanel) {
+            ((void (*)(id, SEL, id, id, id, id))sOrigShowSharePanel)(self, _cmd, sources, dest, destURL, parentWindow);
+        }
+        return;
+    }
+
+    FCPBridge_log(@"[BatchExport] Swizzled showSharePanel called with %@ sources, dest=%@",
+        sources ? @([(NSArray *)sources count]) : @"nil", NSStringFromClass([dest class]));
+
+    @try {
+        // Determine panel class (consumer vs pro)
+        BOOL isConsumer = ((BOOL (*)(id, SEL))objc_msgSend)(
+            objc_getClass("Flexo"), NSSelectorFromString(@"isConsumerUI"));
+
+        Class panelClass = isConsumer
+            ? objc_getClass("FFConsumerSharePanel")
+            : objc_getClass("FFSharePanel");
+        if (!panelClass) panelClass = objc_getClass("FFBaseSharePanel");
+
+        // Modify source to set clip-specific in/out range
+        id firstSource = [(NSArray *)sources firstObject];
+        id sourceToUse = firstSource;
+
+        SEL mutableCopySel = @selector(mutableCopy);
+        SEL setInOutSel = NSSelectorFromString(@"setInPoint:outPoint:");
+        if (firstSource && [firstSource respondsToSelector:mutableCopySel] &&
+            sBatchExportClipStart.flags == 1 && sBatchExportClipEnd.flags == 1) {
+            // Create a mutable copy and set the clip's range as in/out points
+            sourceToUse = ((id (*)(id, SEL))objc_msgSend)(firstSource, mutableCopySel);
+            if (sourceToUse && [sourceToUse respondsToSelector:setInOutSel]) {
+                // Convert our CMTime to NSValue objects that the source expects
+                // The source's setInPoint:outPoint: takes CMTime-wrapping objects
+                // Let's try creating PCTimeObject or similar
+                SEL inPtSel = NSSelectorFromString(@"inPoint");
+                id origIn = [firstSource respondsToSelector:inPtSel]
+                    ? ((id (*)(id, SEL))objc_msgSend)(firstSource, inPtSel) : nil;
+                FCPBridge_log(@"[BatchExport] Original inPoint: %@ (class: %@)",
+                    origIn, origIn ? NSStringFromClass([origIn class]) : @"nil");
+
+                // Try creating time objects from our CMTime values
+                // PCTimeObject or similar wraps CMTime
+                Class timeObjClass = objc_getClass("PCTimeObject");
+                if (timeObjClass) {
+                    SEL initWithTimeSel = NSSelectorFromString(@"timeObjectWithCMTime:");
+                    if ([(id)timeObjClass respondsToSelector:initWithTimeSel]) {
+                        id startObj = ((id (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(
+                            (id)timeObjClass, initWithTimeSel, sBatchExportClipStart);
+                        id endObj = ((id (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(
+                            (id)timeObjClass, initWithTimeSel, sBatchExportClipEnd);
+                        if (startObj && endObj) {
+                            ((void (*)(id, SEL, id, id))objc_msgSend)(sourceToUse, setInOutSel, startObj, endObj);
+                            FCPBridge_log(@"[BatchExport] Set in/out: %@ - %@", startObj, endObj);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create the panel silently (no runModal)
+        id panel = nil;
+        void *rawError = NULL;
+
+        if (isConsumer) {
+            SEL createSel = NSSelectorFromString(@"sharePanelWithSource:destination:error:");
+            panel = ((id (*)(id, SEL, id, id, void **))objc_msgSend)(
+                (id)panelClass, createSel, sourceToUse, dest, &rawError);
+        } else {
+            NSArray *modSources = @[sourceToUse];
+            SEL createSel = NSSelectorFromString(@"sharePanelWithSources:destination:error:");
+            panel = ((id (*)(id, SEL, id, id, void **))objc_msgSend)(
+                (id)panelClass, createSel, modSources, dest, &rawError);
+        }
+
+        if (!panel) {
+            id panelError = rawError ? (__bridge id)rawError : nil;
+            FCPBridge_log(@"[BatchExport] Panel creation failed: %@",
+                panelError ? ((id (*)(id, SEL))objc_msgSend)(panelError, @selector(localizedDescription)) : @"nil");
+            return;
+        }
+
+        // Set destination URL to our batch export folder
+        NSURL *outputFolderURL = sBatchExportFolderURL ?: (NSURL *)destURL;
+        SEL setURLSel = NSSelectorFromString(@"setDestinationURL:");
+        if ([panel respondsToSelector:setURLSel]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(panel, setURLSel, outputFolderURL);
+        }
+
+        // Set delegate (the exporter itself, needed for queuing)
+        SEL setDelegateSel = NSSelectorFromString(@"setDelegate:");
+        if ([panel respondsToSelector:setDelegateSel]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(panel, setDelegateSel, self);
+        }
+
+        // Get batches (created during panel init)
+        NSArray *batches = ((id (*)(id, SEL))objc_msgSend)(panel, NSSelectorFromString(@"batches"));
+        FCPBridge_log(@"[BatchExport] Panel created %lu batches", (unsigned long)(batches ? batches.count : 0));
+
+        if (!batches || batches.count == 0) {
+            FCPBridge_log(@"[BatchExport] No batches from panel");
+            return;
+        }
+
+        // Set per-clip filename on targets if provided
+        if (sBatchExportFileName && sBatchExportFolderURL) {
+            NSURL *fileURL = [sBatchExportFolderURL URLByAppendingPathComponent:sBatchExportFileName];
+            for (id batch in batches) {
+                id jobs = ((id (*)(id, SEL))objc_msgSend)(batch, NSSelectorFromString(@"jobs"));
+                if (!jobs || ![jobs isKindOfClass:[NSArray class]]) continue;
+                for (id job in jobs) {
+                    id targets = ((id (*)(id, SEL))objc_msgSend)(job, NSSelectorFromString(@"targets"));
+                    if (!targets || ![targets isKindOfClass:[NSArray class]]) continue;
+                    for (id target in targets) {
+                        if ([target respondsToSelector:NSSelectorFromString(@"setDestinationURL:")]) {
+                            ((void (*)(id, SEL, id))objc_msgSend)(target,
+                                NSSelectorFromString(@"setDestinationURL:"), fileURL);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Queue the export operations directly (no dialog!)
+        SEL queueSel = NSSelectorFromString(@"queueShareOperationsForBatches:addToTheater:");
+        if ([self respondsToSelector:queueSel]) {
+            FCPBridge_log(@"[BatchExport] Queuing batches on %@", NSStringFromClass([self class]));
+            ((void (*)(id, SEL, id, BOOL))objc_msgSend)(self, queueSel, batches, NO);
+            FCPBridge_log(@"[BatchExport] Queued successfully!");
+        } else {
+            FCPBridge_log(@"[BatchExport] Exporter doesn't respond to queueShareOperationsForBatches:");
+        }
+    } @catch (NSException *e) {
+        FCPBridge_log(@"[BatchExport] Exception in swizzled showSharePanel: %@", e.reason);
+    }
+}
+
+// Unused - kept for reference
+static NSString *FCPBridge_queueClipExport(id timeline, FCPBridge_CMTime startTime, FCPBridge_CMTime endTime,
+                                            NSURL *fileURL, id dest) {
+    // Set range for this clip
+    FCPBridge_seekAndMark(timeline, startTime, @"setRangeStart:");
+    FCPBridge_seekAndMark(timeline, endTime, @"setRangeEnd:");
+
+    // Get sources for this range via shareSelection:
+    SEL selSel = NSSelectorFromString(@"shareSelection:");
+    if (![timeline respondsToSelector:selSel]) return @"no shareSelection: method";
+
+    void *rawSources = ((void * (*)(id, SEL, id))objc_msgSend)(timeline, selSel, nil);
+    if (!rawSources) return @"no sources for range";
+
+    id sources = (__bridge id)rawSources;
+    FCPBridge_log(@"[BatchExport] shareSelection: returned %@ (class: %@)", sources, NSStringFromClass([sources class]));
+
+    if (![sources isKindOfClass:[NSArray class]]) {
+        return [NSString stringWithFormat:@"sources not array, got %@", NSStringFromClass([sources class])];
+    }
+    NSUInteger sourceCount = [(NSArray *)sources count];
+    if (sourceCount == 0) return @"empty sources";
+    FCPBridge_log(@"[BatchExport] Got %lu sources", (unsigned long)sourceCount);
+
+    // Create share panel silently to build CK batch objects
+    Class panelClass = objc_getClass("FFConsumerSharePanel")
+        ?: objc_getClass("FFSharePanel")
+        ?: objc_getClass("FFBaseSharePanel");
+    if (!panelClass) return @"no share panel class";
+    FCPBridge_log(@"[BatchExport] Using panel class: %@", NSStringFromClass(panelClass));
+
+    SEL createSel = NSSelectorFromString(@"sharePanelWithSource:destination:error:");
+    if (![(id)panelClass respondsToSelector:createSel]) return @"panel class has no create method";
+
+    id firstSource = [(NSArray *)sources firstObject];
+    FCPBridge_log(@"[BatchExport] First source: %@ (class: %@)", firstSource, NSStringFromClass([firstSource class]));
+
+    __unsafe_unretained id panelError = nil;
+    void *rawPanel = ((void * (*)(id, SEL, id, id, __unsafe_unretained id *))objc_msgSend)(
+        (id)panelClass, createSel, firstSource, dest, &panelError);
+    if (!rawPanel) {
+        NSString *errStr = panelError
+            ? [NSString stringWithFormat:@"panel: %@",
+               ((id (*)(id, SEL))objc_msgSend)(panelError, @selector(localizedDescription))]
+            : @"panel creation returned nil";
+        FCPBridge_log(@"[BatchExport] %@", errStr);
+        return errStr;
+    }
+    id panel = (__bridge id)rawPanel;
+    FCPBridge_log(@"[BatchExport] Panel created: %@", NSStringFromClass([panel class]));
+
+    // Set destination URL
+    SEL setURLSel = NSSelectorFromString(@"setDestinationURL:");
+    if ([panel respondsToSelector:setURLSel]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(panel, setURLSel, [fileURL URLByDeletingLastPathComponent]);
+    }
+
+    // Extract batches
+    SEL batchesSel = NSSelectorFromString(@"batches");
+    if (![panel respondsToSelector:batchesSel]) return @"panel has no batches method";
+    NSArray *batches = ((id (*)(id, SEL))objc_msgSend)(panel, batchesSel);
+    if (!batches || ![batches isKindOfClass:[NSArray class]]) {
+        FCPBridge_log(@"[BatchExport] batches returned: %@ (class: %@)", batches, batches ? NSStringFromClass([batches class]) : @"nil");
+        return @"no batches";
+    }
+    FCPBridge_log(@"[BatchExport] Got %lu batches", (unsigned long)batches.count);
+    if (batches.count == 0) return @"zero batches";
+
+    // Log batch structure
+    for (NSUInteger bi = 0; bi < batches.count; bi++) {
+        id batch = batches[bi];
+        FCPBridge_log(@"[BatchExport] Batch %lu: %@ (class: %@)", (unsigned long)bi, batch, NSStringFromClass([batch class]));
+        SEL jobsSel = NSSelectorFromString(@"jobs");
+        if ([batch respondsToSelector:jobsSel]) {
+            NSArray *jobs = ((id (*)(id, SEL))objc_msgSend)(batch, jobsSel);
+            FCPBridge_log(@"[BatchExport]   Jobs: %lu", (unsigned long)(jobs ? [(NSArray *)jobs count] : 0));
+            if (jobs && [jobs isKindOfClass:[NSArray class]]) {
+                for (id job in jobs) {
+                    SEL targetsSel = NSSelectorFromString(@"targets");
+                    if ([job respondsToSelector:targetsSel]) {
+                        NSArray *targets = ((id (*)(id, SEL))objc_msgSend)(job, targetsSel);
+                        FCPBridge_log(@"[BatchExport]     Targets: %lu", (unsigned long)(targets ? [(NSArray *)targets count] : 0));
+                        if (targets && [targets isKindOfClass:[NSArray class]]) {
+                            for (id target in targets) {
+                                // Set destination URL on target
+                                SEL setDestSel = NSSelectorFromString(@"setDestinationURL:");
+                                if ([target respondsToSelector:setDestSel]) {
+                                    ((void (*)(id, SEL, id))objc_msgSend)(target, setDestSel, fileURL);
+                                    FCPBridge_log(@"[BatchExport]     Set target URL: %@", fileURL);
+                                }
+                                // Log output URLs
+                                SEL outSel = NSSelectorFromString(@"outputURLs");
+                                if ([target respondsToSelector:outSel]) {
+                                    id urls = ((id (*)(id, SEL))objc_msgSend)(target, outSel);
+                                    FCPBridge_log(@"[BatchExport]     Output URLs: %@", urls);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Create exporter and queue
+    Class exporterClass = objc_getClass("FFSequenceExporter");
+    SEL expSel = NSSelectorFromString(@"sequenceExporterWithSelection:useTimelinePlayback:");
+    if (!exporterClass || ![(id)exporterClass respondsToSelector:expSel]) return @"no exporter class";
+
+    void *rawExporter = ((void * (*)(id, SEL, id, id))objc_msgSend)(
+        (id)exporterClass, expSel, sources, nil);
+    if (!rawExporter) return @"exporter creation failed";
+    id exporter = (__bridge id)rawExporter;
+    FCPBridge_log(@"[BatchExport] Exporter: %@", NSStringFromClass([exporter class]));
+
+    SEL queueSel = NSSelectorFromString(@"queueShareOperationsForBatches:addToTheater:");
+    if (![exporter respondsToSelector:queueSel]) return @"exporter has no queue method";
+
+    FCPBridge_log(@"[BatchExport] Queuing %lu batches...", (unsigned long)batches.count);
+    ((void (*)(id, SEL, id, BOOL))objc_msgSend)(exporter, queueSel, batches, NO);
+    FCPBridge_log(@"[BatchExport] Queued successfully");
+    return @"queued";
+}
+
+NSDictionary *FCPBridge_handleBatchExport(NSDictionary *params) {
+    NSString *scope = params[@"scope"] ?: @"all";
+    NSString *folderPath = params[@"folder"];
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (!timeline) { result = @{@"error": @"No active timeline module"}; return; }
+
+            id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence));
+            if (!sequence) { result = @{@"error": @"No sequence in timeline"}; return; }
+
+            id primaryObj = [sequence respondsToSelector:@selector(primaryObject)]
+                ? ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(primaryObject)) : nil;
+            if (!primaryObj) { result = @{@"error": @"Cannot access primary storyline"}; return; }
+
+            // Show folder picker
+            NSURL *folderURL = nil;
+            if (folderPath) {
+                folderURL = [NSURL fileURLWithPath:folderPath];
+            } else {
+                NSOpenPanel *openPanel = [NSOpenPanel openPanel];
+                openPanel.canChooseFiles = NO;
+                openPanel.canChooseDirectories = YES;
+                openPanel.canCreateDirectories = YES;
+                openPanel.prompt = @"Export Here";
+                openPanel.message = @"Choose destination folder for batch export";
+                NSModalResponse resp = [openPanel runModal];
+                if (resp != NSModalResponseOK) { result = @{@"status": @"cancelled"}; return; }
+                folderURL = openPanel.URL;
+            }
+            if (!folderURL) { result = @{@"error": @"No folder selected"}; return; }
+            [[NSFileManager defaultManager] createDirectoryAtURL:folderURL
+                                     withIntermediateDirectories:YES attributes:nil error:nil];
+
+            // Get selected set if needed
+            NSSet *selectedSet = nil;
+            if ([scope isEqualToString:@"selected"]) {
+                SEL selSel = NSSelectorFromString(@"selectedItems:includeItemBeforePlayheadIfLast:");
+                if ([timeline respondsToSelector:selSel]) {
+                    id sel = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)(timeline, selSel, NO, NO);
+                    if ([sel isKindOfClass:[NSArray class]]) selectedSet = [NSSet setWithArray:sel];
+                }
+                if (!selectedSet || selectedSet.count == 0) {
+                    result = @{@"error": @"No clips selected"}; return;
+                }
+            }
+
+            // Get default share destination
+            Class destClass = objc_getClass("FFShareDestination");
+            id dest = destClass ? ((id (*)(id, SEL))objc_msgSend)((id)destClass,
+                NSSelectorFromString(@"defaultUserDestination")) : nil;
+            if (!dest) { result = @{@"error": @"No default share destination. Configure in File > Share > Add Destination."}; return; }
+
+            // Collect clips
+            NSArray *clips = FCPBridge_collectExportableClips(primaryObj, selectedSet);
+            if (!clips || clips.count == 0) { result = @{@"error": @"No exportable clips"}; return; }
+
+            // Install swizzle on FFSequenceExporter to bypass share dialog
+            Class exporterClass = objc_getClass("FFSequenceExporter");
+            SEL showPanelSel = NSSelectorFromString(@"showSharePanelWithSources:destination:destinationURL:parentWindow:");
+            Method origMethod = exporterClass ? class_getInstanceMethod(exporterClass, showPanelSel) : NULL;
+
+            if (!origMethod) {
+                result = @{@"error": @"Cannot find showSharePanelWithSources: method on FFSequenceExporter"};
+                return;
+            }
+
+            // Save original and install swizzle
+            sOrigShowSharePanel = method_getImplementation(origMethod);
+            method_setImplementation(origMethod, (IMP)FCPBridge_swizzled_showSharePanel);
+            sBatchExportActive = YES;
+            sBatchExportFolderURL = folderURL;
+            sBatchExportPendingCount = clips.count;
+
+            // Swizzle NSWorkspace methods to suppress auto-open of exported files
+            Class wsClass = [NSWorkspace class];
+            Method m;
+            m = class_getInstanceMethod(wsClass, @selector(openURL:));
+            if (m && !sOrigOpenURL) { sOrigOpenURL = method_getImplementation(m); method_setImplementation(m, (IMP)FCPBridge_swizzled_openURL); }
+
+            m = class_getInstanceMethod(wsClass, @selector(activateFileViewerSelectingURLs:));
+            if (m && !sOrigRevealURLs) { sOrigRevealURLs = method_getImplementation(m); method_setImplementation(m, (IMP)FCPBridge_swizzled_revealURLs); }
+
+            m = class_getInstanceMethod(wsClass, NSSelectorFromString(@"openURL:configuration:completionHandler:"));
+            if (m && !sOrigOpenURLConfig) { sOrigOpenURLConfig = method_getImplementation(m); method_setImplementation(m, (IMP)FCPBridge_swizzled_openURLConfig); }
+
+            m = class_getInstanceMethod(wsClass, NSSelectorFromString(@"openURLs:withApplicationAtURL:configuration:completionHandler:"));
+            if (m && !sOrigOpenURLs) { sOrigOpenURLs = method_getImplementation(m); method_setImplementation(m, (IMP)FCPBridge_swizzled_openURLs); }
+
+            m = class_getInstanceMethod(wsClass, @selector(openFile:));
+            if (m && !sOrigOpenFile) { sOrigOpenFile = method_getImplementation(m); method_setImplementation(m, (IMP)FCPBridge_swizzled_openFile); }
+
+            // Set destination action to "Save only" (no auto-open)
+            SEL actionSel = NSSelectorFromString(@"action");
+            SEL setActionSel = NSSelectorFromString(@"setAction:");
+            id origAction = nil;
+            if ([dest respondsToSelector:actionSel]) {
+                origAction = ((id (*)(id, SEL))objc_msgSend)(dest, actionSel);
+            }
+            if ([dest respondsToSelector:setActionSel]) {
+                ((void (*)(id, SEL, id))objc_msgSend)(dest, setActionSel, nil); // nil = save only
+            }
+
+            // Get share helper
+            id shareHelper = ((id (*)(id, SEL))objc_msgSend)(timeline, NSSelectorFromString(@"shareHelper"));
+            SEL shareSel = NSSelectorFromString(@"_shareToDestination:isDefault:");
+
+            NSMutableArray *exportResults = [NSMutableArray array];
+            NSInteger exported = 0;
+
+            for (NSUInteger i = 0; i < clips.count; i++) {
+                NSDictionary *clipInfo = clips[i];
+                FCPBridge_CMTime startCMTime, endCMTime;
+                [clipInfo[@"startCMTime"] getValue:&startCMTime];
+                [clipInfo[@"endCMTime"] getValue:&endCMTime];
+
+                NSString *clipName = clipInfo[@"name"];
+                NSString *safeName = [[clipName stringByReplacingOccurrencesOfString:@"/" withString:@"-"]
+                                      stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+                // Use clip name directly; append index only if duplicate
+                NSString *baseName = safeName;
+                NSString *candidate = baseName;
+                NSUInteger dupIdx = 2;
+                while ([[NSFileManager defaultManager] fileExistsAtPath:
+                        [[folderURL URLByAppendingPathComponent:
+                          [candidate stringByAppendingPathExtension:@"mov"]] path]]) {
+                    candidate = [NSString stringWithFormat:@"%@ %lu", baseName, (unsigned long)dupIdx++];
+                }
+                sBatchExportFileName = candidate;
+
+                NSString *status = @"unknown";
+                @try {
+                    // Store clip range for the swizzled showSharePanel
+                    sBatchExportClipStart = startCMTime;
+                    sBatchExportClipEnd = endCMTime;
+
+                    // Set in/out range using simulated I/O key presses
+                    FCPBridge_seekAndMark(timeline, startCMTime, @"setRangeStart:");
+                    FCPBridge_seekAndMark(timeline, endCMTime, @"setRangeEnd:");
+
+                    // Trigger the normal share flow - our swizzle intercepts the dialog
+                    if (shareHelper && [shareHelper respondsToSelector:shareSel]) {
+                        ((void (*)(id, SEL, id, BOOL))objc_msgSend)(shareHelper, shareSel, nil, YES);
+                        status = @"queued";
+                        exported++;
+                    } else {
+                        status = @"no share helper";
+                    }
+                } @catch (NSException *e) {
+                    status = [NSString stringWithFormat:@"error: %@", e.reason];
+                }
+
+                // Let FCP process events between clips
+                [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+
+                [exportResults addObject:@{
+                    @"name": clipName,
+                    @"startTime": clipInfo[@"startTime"],
+                    @"endTime": clipInfo[@"endTime"],
+                    @"status": status,
+                }];
+            }
+
+            // Restore showSharePanel swizzle
+            if (origMethod && sOrigShowSharePanel) {
+                method_setImplementation(origMethod, sOrigShowSharePanel);
+            }
+            sBatchExportActive = NO;
+            sBatchExportFileName = nil;
+            sBatchExportFolderURL = nil;
+            sOrigShowSharePanel = NULL;
+
+            // Restore original destination action
+            if ([dest respondsToSelector:setActionSel] && origAction) {
+                ((void (*)(id, SEL, id))objc_msgSend)(dest, setActionSel, origAction);
+            }
+
+            // Clear range
+            id app = ((id (*)(id, SEL))objc_msgSend)(
+                objc_getClass("NSApplication"), @selector(sharedApplication));
+            ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
+                app, @selector(sendAction:to:from:),
+                NSSelectorFromString(@"clearRange:"), nil, nil);
+
+            result = @{
+                @"status": @"ok",
+                @"folder": [folderURL path] ?: @"",
+                @"exported": @(exported),
+                @"total": @(clips.count),
+                @"clips": exportResults,
+            };
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Failed to batch export"};
 }
 
 static NSDictionary *FCPBridge_handleTimelineGetState(NSDictionary *params) {
@@ -2874,6 +3906,565 @@ NSDictionary *FCPBridge_handleSubjectStabilize(NSDictionary *params) {
     };
 }
 
+#pragma mark - Viewer Pinch-to-Zoom
+
+// Injects magnifyWithEvent: into FFPlayerView so trackpad pinch gestures zoom the viewer.
+// Gated by NSUserDefaults key "FCPBridgeViewerPinchZoom".
+
+static NSString * const kFCPBridgeViewerPinchZoom = @"FCPBridgeViewerPinchZoom";
+static BOOL sViewerPinchZoomInstalled = NO;
+
+// The injected magnifyWithEvent: handler for FFPlayerView
+static void FCPBridge_FFPlayerView_magnifyWithEvent(id self, SEL _cmd, NSEvent *event) {
+    // Get playerVideoModule from the view
+    SEL pvmSel = NSSelectorFromString(@"playerVideoModule");
+    if (![self respondsToSelector:pvmSel]) return;
+    id videoModule = ((id (*)(id, SEL))objc_msgSend)(self, pvmSel);
+    if (!videoModule) return;
+
+    // Read current zoom factor
+    SEL zfSel = NSSelectorFromString(@"zoomFactor");
+    if (![videoModule respondsToSelector:zfSel]) return;
+    float currentZoom = ((float (*)(id, SEL))objc_msgSend)(videoModule, zfSel);
+
+    // If zoom is 0 (Fit mode), read the reported zoom to get the actual scale
+    if (currentZoom == 0.0f) {
+        SEL reportedSel = NSSelectorFromString(@"reportedZoomFactor");
+        if ([videoModule respondsToSelector:reportedSel]) {
+            currentZoom = ((float (*)(id, SEL))objc_msgSend)(videoModule, reportedSel);
+        }
+        if (currentZoom == 0.0f) currentZoom = 1.0f;
+    }
+
+    // Compute new zoom: magnification is the pinch delta (-1 to +1 range per gesture)
+    CGFloat magnification = event.magnification;
+    float newZoom = currentZoom * (1.0f + (float)magnification);
+
+    // Clamp to reasonable range (6.25% to 800%)
+    if (newZoom < 0.0625f) newZoom = 0.0625f;
+    if (newZoom > 8.0f) newZoom = 8.0f;
+
+    // Apply
+    SEL setSel = NSSelectorFromString(@"setZoomFactor:");
+    if ([videoModule respondsToSelector:setSel]) {
+        ((void (*)(id, SEL, float))objc_msgSend)(videoModule, setSel, newZoom);
+    }
+}
+
+// Swizzled scrollWheel: — pans the viewer when zoomed in, falls through to original otherwise
+static IMP sOrigScrollWheel = NULL;
+
+static void FCPBridge_FFPlayerView_scrollWheel(id self, SEL _cmd, NSEvent *event) {
+    // Get playerVideoModule
+    SEL pvmSel = NSSelectorFromString(@"playerVideoModule");
+    id videoModule = [self respondsToSelector:pvmSel]
+        ? ((id (*)(id, SEL))objc_msgSend)(self, pvmSel) : nil;
+
+    if (videoModule) {
+        SEL zfSel = NSSelectorFromString(@"zoomFactor");
+        float zoom = [videoModule respondsToSelector:zfSel]
+            ? ((float (*)(id, SEL))objc_msgSend)(videoModule, zfSel) : 0.0f;
+
+        // Only pan when actually zoomed in (zoomFactor > 0 means not in Fit mode)
+        if (zoom > 0.0f) {
+            SEL originSel = NSSelectorFromString(@"origin");
+            SEL setOriginSel = NSSelectorFromString(@"setOrigin:");
+            if ([videoModule respondsToSelector:originSel] &&
+                [videoModule respondsToSelector:setOriginSel]) {
+
+                CGPoint origin = ((CGPoint (*)(id, SEL))objc_msgSend)(videoModule, originSel);
+
+                // scrollingDeltaX/Y give trackpad two-finger scroll deltas
+                CGFloat dx = event.scrollingDeltaX;
+                CGFloat dy = event.scrollingDeltaY;
+
+                // If hasPreciseScrollingDeltas (trackpad), use directly;
+                // otherwise (mouse wheel), scale up
+                if (!event.hasPreciseScrollingDeltas) {
+                    dx *= 10.0;
+                    dy *= 10.0;
+                }
+
+                origin.x += dx;
+                origin.y -= dy; // flip Y — scroll down should pan down (move origin up)
+
+                ((void (*)(id, SEL, CGPoint))objc_msgSend)(videoModule, setOriginSel, origin);
+                return; // consumed — don't pass to original
+            }
+        }
+    }
+
+    // Not zoomed in or couldn't get module — call original handler
+    if (sOrigScrollWheel) {
+        ((void (*)(id, SEL, NSEvent *))sOrigScrollWheel)(self, _cmd, event);
+    }
+}
+
+static IMP sOrigMagnifyWithEvent = NULL;
+
+void FCPBridge_installViewerPinchZoom(void) {
+    if (sViewerPinchZoomInstalled) return;
+
+    Class playerView = objc_getClass("FFPlayerView");
+    if (!playerView) {
+        FCPBridge_log(@"[ViewerZoom] FFPlayerView not found — skipping pinch-to-zoom install");
+        return;
+    }
+
+    SEL magnifySel = @selector(magnifyWithEvent:);
+
+    // class_addMethod only adds if the class itself doesn't directly implement it
+    // (it won't be fooled by superclass methods like NSResponder's default)
+    BOOL added = class_addMethod(playerView, magnifySel,
+                                 (IMP)FCPBridge_FFPlayerView_magnifyWithEvent,
+                                 "v@:@"); // void, self, _cmd, NSEvent*
+    if (added) {
+        FCPBridge_log(@"[ViewerZoom] Added magnifyWithEvent: to FFPlayerView — pinch-to-zoom enabled");
+    } else {
+        // FFPlayerView directly implements magnifyWithEvent: — swizzle it
+        Method m = class_getInstanceMethod(playerView, magnifySel);
+        if (m) {
+            sOrigMagnifyWithEvent = method_setImplementation(m, (IMP)FCPBridge_FFPlayerView_magnifyWithEvent);
+            FCPBridge_log(@"[ViewerZoom] Swizzled magnifyWithEvent: on FFPlayerView — pinch-to-zoom enabled");
+        } else {
+            FCPBridge_log(@"[ViewerZoom] Failed to install magnifyWithEvent: on FFPlayerView");
+        }
+    }
+
+    // Swizzle scrollWheel: for two-finger panning when zoomed in
+    SEL scrollSel = @selector(scrollWheel:);
+    Method scrollMethod = class_getInstanceMethod(playerView, scrollSel);
+    if (scrollMethod) {
+        sOrigScrollWheel = method_setImplementation(scrollMethod, (IMP)FCPBridge_FFPlayerView_scrollWheel);
+        FCPBridge_log(@"[ViewerZoom] Swizzled scrollWheel: on FFPlayerView — two-finger pan enabled");
+    }
+
+    sViewerPinchZoomInstalled = YES;
+}
+
+void FCPBridge_removeViewerPinchZoom(void) {
+    if (!sViewerPinchZoomInstalled) return;
+
+    Class playerView = objc_getClass("FFPlayerView");
+    if (!playerView) return;
+
+    // Restore magnifyWithEvent:
+    SEL magnifySel = @selector(magnifyWithEvent:);
+    Method m = class_getInstanceMethod(playerView, magnifySel);
+    if (m) {
+        if (sOrigMagnifyWithEvent) {
+            method_setImplementation(m, sOrigMagnifyWithEvent);
+            sOrigMagnifyWithEvent = NULL;
+        } else {
+            Class nsResponder = [NSResponder class];
+            Method superMethod = class_getInstanceMethod(nsResponder, magnifySel);
+            if (superMethod) {
+                method_setImplementation(m, method_getImplementation(superMethod));
+            }
+        }
+    }
+
+    // Restore scrollWheel:
+    if (sOrigScrollWheel) {
+        SEL scrollSel = @selector(scrollWheel:);
+        Method sm = class_getInstanceMethod(playerView, scrollSel);
+        if (sm) {
+            method_setImplementation(sm, sOrigScrollWheel);
+        }
+        sOrigScrollWheel = NULL;
+    }
+
+    sViewerPinchZoomInstalled = NO;
+    FCPBridge_log(@"[ViewerZoom] Disabled pinch-to-zoom and pan on FFPlayerView");
+}
+
+void FCPBridge_setViewerPinchZoomEnabled(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFCPBridgeViewerPinchZoom];
+    if (enabled) {
+        FCPBridge_installViewerPinchZoom();
+    } else {
+        FCPBridge_removeViewerPinchZoom();
+    }
+}
+
+BOOL FCPBridge_isViewerPinchZoomEnabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kFCPBridgeViewerPinchZoom];
+}
+
+#pragma mark - Viewer Zoom RPC Handlers
+
+static NSDictionary *FCPBridge_handleViewerGetZoom(NSDictionary *params) {
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id player = FCPBridge_getPlayerModule();
+            if (!player) { result = @{@"error": @"No player module found"}; return; }
+
+            SEL vmSel = NSSelectorFromString(@"videoModule");
+            if (![player respondsToSelector:vmSel]) { result = @{@"error": @"No videoModule on player"}; return; }
+            id videoModule = ((id (*)(id, SEL))objc_msgSend)(player, vmSel);
+            if (!videoModule) { result = @{@"error": @"videoModule is nil"}; return; }
+
+            SEL zfSel = NSSelectorFromString(@"zoomFactor");
+            float zoom = ((float (*)(id, SEL))objc_msgSend)(videoModule, zfSel);
+
+            float reportedZoom = zoom;
+            SEL reportedSel = NSSelectorFromString(@"reportedZoomFactor");
+            if ([videoModule respondsToSelector:reportedSel]) {
+                reportedZoom = ((float (*)(id, SEL))objc_msgSend)(videoModule, reportedSel);
+            }
+
+            result = @{
+                @"zoomFactor": @(zoom),
+                @"reportedZoomFactor": @(reportedZoom),
+                @"percentage": @(reportedZoom * 100.0f),
+                @"isFitMode": @(zoom == 0.0f),
+            };
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result;
+}
+
+static NSDictionary *FCPBridge_handleViewerSetZoom(NSDictionary *params) {
+    NSNumber *zoomNum = params[@"zoom"];
+    if (!zoomNum) return @{@"error": @"'zoom' parameter required (float: 0.0=fit, 1.0=100%, etc.)"};
+    float zoom = [zoomNum floatValue];
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id player = FCPBridge_getPlayerModule();
+            if (!player) { result = @{@"error": @"No player module found"}; return; }
+
+            SEL vmSel = NSSelectorFromString(@"videoModule");
+            if (![player respondsToSelector:vmSel]) { result = @{@"error": @"No videoModule on player"}; return; }
+            id videoModule = ((id (*)(id, SEL))objc_msgSend)(player, vmSel);
+            if (!videoModule) { result = @{@"error": @"videoModule is nil"}; return; }
+
+            SEL setSel = NSSelectorFromString(@"setZoomFactor:");
+            if (![videoModule respondsToSelector:setSel]) { result = @{@"error": @"setZoomFactor: not available"}; return; }
+
+            ((void (*)(id, SEL, float))objc_msgSend)(videoModule, setSel, zoom);
+
+            result = @{
+                @"status": @"ok",
+                @"zoomFactor": @(zoom),
+                @"percentage": zoom == 0.0f ? @"fit" : @(zoom * 100.0f),
+            };
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result;
+}
+
+static NSDictionary *FCPBridge_handleOptionsGet(NSDictionary *params) {
+    return @{
+        @"viewerPinchZoom": @(FCPBridge_isViewerPinchZoomEnabled()),
+    };
+}
+
+static NSDictionary *FCPBridge_handleOptionsSet(NSDictionary *params) {
+    NSString *option = params[@"option"];
+    if (!option) return @{@"error": @"'option' parameter required"};
+
+    if ([option isEqualToString:@"viewerPinchZoom"]) {
+        NSNumber *enabled = params[@"enabled"];
+        if (!enabled) return @{@"error": @"'enabled' parameter required (true/false)"};
+        FCPBridge_setViewerPinchZoomEnabled([enabled boolValue]);
+        return @{@"status": @"ok", @"viewerPinchZoom": @(FCPBridge_isViewerPinchZoomEnabled())};
+    }
+
+    return @{@"error": [NSString stringWithFormat:@"Unknown option: %@", option]};
+}
+
+#pragma mark - Freeze Extend Transition Swizzle
+
+// When FCP shows "not enough extra media" for a transition, this swizzle replaces
+// the dialog with our own that includes a "Use Freeze Frames" button.
+//
+// We swizzle -[FFAnchoredSequence displayTransitionAvailableMediaAlertDialog:] directly
+// rather than NSAlert's runModal, because FCP uses the deprecated NSAlert API with
+// unpredictable return value mapping. By owning the dialog entirely, we control the
+// output parameter (*a3): 1 = accept (create with overlap), 0 = cancel.
+
+static IMP sOrigDefaultOverlapType = NULL;
+static BOOL sForceOverlap = NO; // When YES, defaultTransitionOverlapType returns 2
+
+// Swizzled -[FFAnchoredSequence defaultTransitionOverlapType]
+// Original returns 1 (needs handles). We return 2 (overlap/use edge frames) when forced.
+static int FCPBridge_swizzled_defaultTransitionOverlapType(id self, SEL _cmd) {
+    if (sForceOverlap) {
+        FCPBridge_log(@"[FreezeExtend] defaultTransitionOverlapType -> 2 (forced overlap)");
+        return 2;
+    }
+    return ((int (*)(id, SEL))sOrigDefaultOverlapType)(self, _cmd);
+}
+
+static IMP sOrigDisplayTransitionAlert = NULL;
+static NSString *sFreezeExtendPendingTransitionID = nil; // For API auto-accept
+
+static BOOL sFreezeExtendUseSpeedRamp = NO; // Set when user clicks "Use Freeze Frames"
+
+// Find clips at the current edit point for speed ramp application
+static void FCPBridge_findClipsAtEditPoint(id timeline, id *outgoing, id *incoming) {
+    *outgoing = nil;
+    *incoming = nil;
+
+    id sequence = [timeline respondsToSelector:@selector(sequence)]
+        ? ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence)) : nil;
+    if (!sequence) return;
+
+    id primaryObj = [sequence respondsToSelector:@selector(primaryObject)]
+        ? ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(primaryObject)) : nil;
+    if (!primaryObj) return;
+
+    SEL erSel = NSSelectorFromString(@"effectiveRangeOfObject:");
+    if (![primaryObj respondsToSelector:erSel]) return;
+
+    // Get playhead time
+    FCPBridge_CMTime ph = {0, 1, 0, 0};
+    SEL ctSel = NSSelectorFromString(@"currentSequenceTime");
+    if ([timeline respondsToSelector:ctSel]) {
+        NSMethodSignature *sig = [timeline methodSignatureForSelector:ctSel];
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setTarget:timeline]; [inv setSelector:ctSel]; [inv invoke];
+        [inv getReturnValue:&ph];
+    }
+    if (ph.timescale <= 0) return;
+
+    NSArray *items = ((id (*)(id, SEL))objc_msgSend)(primaryObj, @selector(containedItems));
+    if (![items isKindOfClass:[NSArray class]]) return;
+
+    Class transCls = objc_getClass("FFAnchoredTransition");
+    int64_t bestOut = INT64_MAX, bestIn = INT64_MAX;
+
+    for (id item in items) {
+        if (transCls && [item isKindOfClass:transCls]) continue;
+        if ([NSStringFromClass([item class]) containsString:@"Gap"]) continue;
+        @try {
+            FCPBridge_CMTimeRange r = ((FCPBridge_CMTimeRange (*)(id, SEL, id))objc_msgSend)(primaryObj, erSel, item);
+            int64_t s = r.start.value, e = s + r.duration.value;
+            if (r.start.timescale != ph.timescale && r.start.timescale > 0) { s = r.start.value * ph.timescale / r.start.timescale; }
+            if (r.duration.timescale != ph.timescale && r.duration.timescale > 0) { e = s + r.duration.value * ph.timescale / r.duration.timescale; } else { e = s + r.duration.value; }
+            int64_t od = llabs(e - ph.value), id_ = llabs(s - ph.value);
+            if (od < bestOut && od < ph.timescale) { bestOut = od; *outgoing = item; }
+            if (id_ < bestIn && id_ < ph.timescale && item != *outgoing) { bestIn = id_; *incoming = item; }
+        } @catch (NSException *ex) { continue; }
+    }
+}
+
+// Apply speed ramps at clip edges, then re-apply transition
+static void FCPBridge_applySpeedRampAndTransition(id timeline, NSString *transitionID) {
+    FCPBridge_log(@"[FreezeExtend] Applying speed ramps at clip edges");
+
+    id outgoing = nil, incoming = nil;
+    FCPBridge_findClipsAtEditPoint(timeline, &outgoing, &incoming);
+
+    id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence));
+    id primaryObj = ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(primaryObject));
+    SEL erSel = NSSelectorFromString(@"effectiveRangeOfObject:");
+    SEL setPhSel = @selector(setPlayheadTime:);
+    SEL selectSel = @selector(selectClipAtPlayhead:);
+
+    // Get frame duration
+    FCPBridge_CMTime fd = {1001, 24000, 1, 0};
+    SEL fdSel = NSSelectorFromString(@"frameDuration");
+    if ([sequence respondsToSelector:fdSel])
+        fd = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(sequence, fdSel);
+
+    // Helper: compute frame duration normalized to a target timescale
+    int64_t fdNorm = fd.value;
+
+    // --- Speed ramp to zero on outgoing clip's last frame ---
+    if (outgoing && [primaryObj respondsToSelector:erSel]) {
+        FCPBridge_CMTimeRange r = ((FCPBridge_CMTimeRange (*)(id, SEL, id))objc_msgSend)(primaryObj, erSel, outgoing);
+        int32_t ts = r.start.timescale;
+        int64_t dur = r.duration.value;
+        if (r.duration.timescale != ts && r.duration.timescale > 0)
+            dur = r.duration.value * ts / r.duration.timescale;
+        fdNorm = fd.value;
+        if (fd.timescale != ts && fd.timescale > 0)
+            fdNorm = fd.value * ts / fd.timescale;
+
+        // First: seek INSIDE the clip (midpoint) to reliably select it
+        FCPBridge_CMTime midPos = r.start;
+        midPos.value = r.start.value + dur / 2;
+        ((void (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(timeline, setPhSel, midPos);
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        ((void (*)(id, SEL, id))objc_msgSend)(timeline, selectSel, nil);
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+
+        // Now seek to the last frame for the ramp position
+        FCPBridge_CMTime endPos = r.start;
+        endPos.value = r.start.value + dur - fdNorm;
+        FCPBridge_log(@"[FreezeExtend] Outgoing clip: selected at mid, ramp at %lld/%d", endPos.value, ts);
+        ((void (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(timeline, setPhSel, endPos);
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+
+        SEL rampToZeroSel = @selector(retimeSpeedRampToZero:);
+        if ([timeline respondsToSelector:rampToZeroSel]) {
+            FCPBridge_log(@"[FreezeExtend] Applying retimeSpeedRampToZero on outgoing clip");
+            ((void (*)(id, SEL, id))objc_msgSend)(timeline, rampToZeroSel, nil);
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
+        }
+    }
+
+    // --- Speed ramp from zero on incoming clip's first frame ---
+    if (incoming && [primaryObj respondsToSelector:erSel]) {
+        // Re-fetch since speed ramp may have shifted positions
+        NSArray *items = ((id (*)(id, SEL))objc_msgSend)(primaryObj, @selector(containedItems));
+        for (id item in items) {
+            if (item != incoming) continue;
+            @try {
+                FCPBridge_CMTimeRange r = ((FCPBridge_CMTimeRange (*)(id, SEL, id))objc_msgSend)(primaryObj, erSel, item);
+                int32_t ts = r.start.timescale;
+                int64_t dur = r.duration.value;
+                if (r.duration.timescale != ts && r.duration.timescale > 0)
+                    dur = r.duration.value * ts / r.duration.timescale;
+                fdNorm = fd.value;
+                if (fd.timescale != ts && fd.timescale > 0)
+                    fdNorm = fd.value * ts / fd.timescale;
+
+                // First: seek INSIDE the clip (midpoint) to reliably select it
+                FCPBridge_CMTime midPos = r.start;
+                midPos.value = r.start.value + dur / 2;
+                ((void (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(timeline, setPhSel, midPos);
+                [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                ((void (*)(id, SEL, id))objc_msgSend)(timeline, selectSel, nil);
+                [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+
+                // Now seek to the first frame for the ramp position
+                FCPBridge_CMTime startPos = r.start;
+                startPos.value += fdNorm; // One frame in to avoid edit point boundary
+                FCPBridge_log(@"[FreezeExtend] Incoming clip: selected at mid, ramp at %lld/%d", startPos.value, ts);
+                ((void (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(timeline, setPhSel, startPos);
+                [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+
+                SEL rampFromZeroSel = @selector(retimeSpeedRampFromZero:);
+                if ([timeline respondsToSelector:rampFromZeroSel]) {
+                    FCPBridge_log(@"[FreezeExtend] Applying retimeSpeedRampFromZero on incoming clip");
+                    ((void (*)(id, SEL, id))objc_msgSend)(timeline, rampFromZeroSel, nil);
+                    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
+                }
+            } @catch (NSException *e) { FCPBridge_log(@"[FreezeExtend] Error: %@", e.reason); }
+            break;
+        }
+    }
+
+    // --- Now apply the transition (with forced overlap to be safe) ---
+    FCPBridge_log(@"[FreezeExtend] Re-applying transition after speed ramps");
+    sForceOverlap = YES;
+
+    Class ffEffect = objc_getClass("FFEffect");
+    id originalDefault = nil;
+    if (transitionID && ffEffect) {
+        originalDefault = ((id (*)(id, SEL))objc_msgSend)((id)ffEffect, @selector(defaultVideoTransitionEffectID));
+        [[NSUserDefaults standardUserDefaults] setObject:transitionID forKey:@"FFDefaultVideoTransition"];
+    }
+
+    // Navigate to the edit point between the ramps
+    SEL prevEditSel = @selector(previousEdit:);
+    if ([timeline respondsToSelector:prevEditSel]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(timeline, prevEditSel, nil);
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    }
+
+    SEL addSel = @selector(addTransition:);
+    if ([timeline respondsToSelector:addSel])
+        ((void (*)(id, SEL, id))objc_msgSend)(timeline, addSel, nil);
+    else
+        [[NSApplication sharedApplication] sendAction:addSel to:nil from:nil];
+
+    sForceOverlap = NO;
+    if (originalDefault)
+        [[NSUserDefaults standardUserDefaults] setObject:originalDefault forKey:@"FFDefaultVideoTransition"];
+
+    FCPBridge_log(@"[FreezeExtend] Speed ramp + transition complete");
+}
+
+// Replacement for -[FFAnchoredSequence displayTransitionAvailableMediaAlertDialog:]
+static char FCPBridge_swizzled_displayTransitionAlert(id self, SEL _cmd, char *result) {
+    FCPBridge_log(@"[FreezeExtend] Intercepted displayTransitionAvailableMediaAlertDialog:");
+
+    // If API freeze_extend requested, cancel dialog — speed ramps will be applied after
+    if (sFreezeExtendPendingTransitionID != nil) {
+        FCPBridge_log(@"[FreezeExtend] API freeze_extend — cancelling dialog for speed ramp path");
+        sFreezeExtendUseSpeedRamp = YES;
+        if (result) *result = 0;
+        return 1;
+    }
+
+    // Show our own alert with "Use Freeze Frames" button
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"There is not enough extra media beyond clip edges to create the transition."];
+    [alert setInformativeText:@"\"Create Transition\" overlaps clips (may shorten project).\n\n"
+        @"\"Use Freeze Frames\" adds speed ramps at clip edges to create handles, "
+        @"then applies the transition."];
+    [alert setAlertStyle:NSAlertStyleInformational];
+
+    [alert addButtonWithTitle:@"Create Transition"];
+    [alert addButtonWithTitle:@"Use Freeze Frames"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    NSModalResponse response = [alert runModal];
+
+    if (response == NSAlertFirstButtonReturn) {
+        // Standard overlap
+        FCPBridge_log(@"[FreezeExtend] User clicked 'Create Transition'");
+        if (result) *result = 1;
+    } else if (response == NSAlertSecondButtonReturn) {
+        // Speed ramp path — cancel this transition, apply ramps asynchronously
+        FCPBridge_log(@"[FreezeExtend] User clicked 'Use Freeze Frames' — will apply speed ramps");
+        sFreezeExtendUseSpeedRamp = YES;
+        if (result) *result = 0; // Cancel the current transition attempt
+        // Schedule speed ramp after a delay to let the call stack fully unwind
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+            if (!sFreezeExtendUseSpeedRamp) return;
+            sFreezeExtendUseSpeedRamp = NO;
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (timeline) {
+                FCPBridge_applySpeedRampAndTransition(timeline, nil);
+            }
+        });
+    } else {
+        FCPBridge_log(@"[FreezeExtend] User cancelled");
+        if (result) *result = 0;
+    }
+
+    return 1;
+}
+
+// Install the swizzles (called once at startup)
+void FCPBridge_installTransitionFreezeExtendSwizzle(void) {
+    Class seqClass = objc_getClass("FFAnchoredSequence");
+    if (!seqClass) {
+        FCPBridge_log(@"[FreezeExtend] WARNING: FFAnchoredSequence class not found");
+        return;
+    }
+
+    // Swizzle defaultTransitionOverlapType to allow forcing overlap mode
+    SEL overlapSel = NSSelectorFromString(@"defaultTransitionOverlapType");
+    Method overlapMethod = class_getInstanceMethod(seqClass, overlapSel);
+    if (overlapMethod) {
+        sOrigDefaultOverlapType = method_setImplementation(overlapMethod,
+            (IMP)FCPBridge_swizzled_defaultTransitionOverlapType);
+        FCPBridge_log(@"[FreezeExtend] Swizzled -[FFAnchoredSequence defaultTransitionOverlapType]");
+    }
+
+    // Swizzle displayTransitionAvailableMediaAlertDialog: to add our button
+    SEL alertSel = NSSelectorFromString(@"displayTransitionAvailableMediaAlertDialog:");
+    Method alertMethod = class_getInstanceMethod(seqClass, alertSel);
+    if (alertMethod) {
+        sOrigDisplayTransitionAlert = method_setImplementation(alertMethod,
+            (IMP)FCPBridge_swizzled_displayTransitionAlert);
+        FCPBridge_log(@"[FreezeExtend] Swizzled -[FFAnchoredSequence displayTransitionAvailableMediaAlertDialog:]");
+    }
+}
+
 #pragma mark - Transition Handlers
 
 NSDictionary *FCPBridge_handleTransitionsList(NSDictionary *params) {
@@ -2956,6 +4547,7 @@ NSDictionary *FCPBridge_handleTransitionsList(NSDictionary *params) {
 NSDictionary *FCPBridge_handleTransitionsApply(NSDictionary *params) {
     NSString *effectID = params[@"effectID"];
     NSString *name = params[@"name"];
+    BOOL freezeExtend = [params[@"freezeExtend"] boolValue]; // Auto freeze-extend if not enough media
 
     if (!effectID && !name) {
         return @{@"error": @"effectID or name parameter required"};
@@ -3029,13 +4621,27 @@ NSDictionary *FCPBridge_handleTransitionsApply(NSDictionary *params) {
                 return;
             }
 
+            // If freezeExtend is requested via API, use speed ramp path
+            if (freezeExtend) {
+                sFreezeExtendPendingTransitionID = [resolvedID copy];
+                sFreezeExtendUseSpeedRamp = NO;
+            }
+
             SEL addSel = @selector(addTransition:);
             if ([timelineModule respondsToSelector:addSel]) {
                 ((void (*)(id, SEL, id))objc_msgSend)(timelineModule, addSel, nil);
             } else {
-                // Fall back to responder chain
                 [[NSApplication sharedApplication] sendAction:addSel to:nil from:nil];
             }
+
+            // If the dialog was triggered and we chose speed ramp path, apply it now
+            if (sFreezeExtendUseSpeedRamp) {
+                sFreezeExtendUseSpeedRamp = NO;
+                FCPBridge_applySpeedRampAndTransition(timelineModule, resolvedID);
+            }
+
+            sFreezeExtendPendingTransitionID = nil;
+            sForceOverlap = NO;
 
             // Restore the original default transition
             if (originalDefault) {
@@ -3124,6 +4730,1673 @@ static NSDictionary *FCPBridge_handleCommandAI(NSDictionary *params) {
     return result ?: @{@"error": @"AI request timed out"};
 }
 
+#pragma mark - Browser Clip Handlers
+
+// List clips available in the event browser
+static NSDictionary *FCPBridge_handleBrowserListClips(NSDictionary *params) {
+    __block NSDictionary *result = nil;
+
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            // Get active library -> events -> clips
+            id libs = ((id (*)(id, SEL))objc_msgSend)(
+                objc_getClass("FFLibraryDocument"), @selector(copyActiveLibraries));
+            if (![libs isKindOfClass:[NSArray class]] || [(NSArray *)libs count] == 0) {
+                result = @{@"error": @"No active library"};
+                return;
+            }
+
+            id library = [(NSArray *)libs firstObject];
+
+            // Get events from library — events are FFFolder objects
+            SEL eventsSel = NSSelectorFromString(@"events");
+            if (![library respondsToSelector:eventsSel]) {
+                result = @{@"error": @"Library does not respond to events"};
+                return;
+            }
+            id events = ((id (*)(id, SEL))objc_msgSend)(library, eventsSel);
+            if (![events isKindOfClass:[NSArray class]] || [(NSArray *)events count] == 0) {
+                result = @{@"error": @"No events in library"};
+                return;
+            }
+
+            NSMutableArray *allClips = [NSMutableArray array];
+            NSInteger clipIndex = 0;
+
+            for (id event in (NSArray *)events) {
+                NSString *eventName = @"";
+                if ([event respondsToSelector:@selector(displayName)])
+                    eventName = ((id (*)(id, SEL))objc_msgSend)(event, @selector(displayName)) ?: @"";
+
+                // Events are FFFolder objects. Get their child items which are event clips.
+                // Try multiple approaches: childItems, items, ownedClips, containedItems
+                id clips = nil;
+                SEL childItemsSel = NSSelectorFromString(@"childItems");
+                SEL ownedClipsSel = NSSelectorFromString(@"ownedClips");
+                SEL itemsSel = NSSelectorFromString(@"items");
+
+                // Try displayOwnedClips first (browser-visible clips), then ownedClips
+                SEL displayClipsSel = NSSelectorFromString(@"displayOwnedClips");
+                if ([event respondsToSelector:displayClipsSel]) {
+                    clips = ((id (*)(id, SEL))objc_msgSend)(event, displayClipsSel);
+                } else if ([event respondsToSelector:ownedClipsSel]) {
+                    clips = ((id (*)(id, SEL))objc_msgSend)(event, ownedClipsSel);
+                } else if ([event respondsToSelector:childItemsSel]) {
+                    clips = ((id (*)(id, SEL))objc_msgSend)(event, childItemsSel);
+                } else if ([event respondsToSelector:itemsSel]) {
+                    clips = ((id (*)(id, SEL))objc_msgSend)(event, itemsSel);
+                }
+
+                // Convert NSSet to NSArray if needed
+                if (clips && [clips isKindOfClass:[NSSet class]]) {
+                    clips = [(NSSet *)clips allObjects];
+                }
+
+                NSUInteger clipCount = [clips isKindOfClass:[NSArray class]] ? [(NSArray *)clips count] : 0;
+                FCPBridge_log(@"[Browser] Event '%@' class=%@ clips=%@ count=%lu",
+                    eventName, NSStringFromClass([event class]),
+                    clips ? NSStringFromClass([clips class]) : @"nil",
+                    (unsigned long)clipCount);
+
+                if (![clips isKindOfClass:[NSArray class]]) continue;
+
+                for (id clip in (NSArray *)clips) {
+                    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+                    info[@"index"] = @(clipIndex++);
+                    info[@"event"] = eventName;
+                    info[@"class"] = NSStringFromClass([clip class]);
+
+                    if ([clip respondsToSelector:@selector(displayName)]) {
+                        id name = ((id (*)(id, SEL))objc_msgSend)(clip, @selector(displayName));
+                        info[@"name"] = name ?: @"";
+                    }
+                    if ([clip respondsToSelector:@selector(duration)]) {
+                        FCPBridge_CMTime d = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(clip, @selector(duration));
+                        info[@"duration"] = FCPBridge_serializeCMTime(d);
+                    }
+
+                    NSString *handle = FCPBridge_storeHandle(clip);
+                    info[@"handle"] = handle;
+                    [allClips addObject:info];
+                }
+            }
+
+            result = @{@"clips": allClips, @"count": @(allClips.count)};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Failed to list browser clips"};
+}
+
+// Append a clip from the event browser to the timeline
+static NSDictionary *FCPBridge_handleBrowserAppendClip(NSDictionary *params) {
+    NSString *handle = params[@"handle"];
+    NSNumber *indexNum = params[@"index"];
+    NSString *name = params[@"name"];
+
+    __block NSDictionary *result = nil;
+
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id clip = nil;
+
+            // Resolve clip by handle, index, or name
+            if (handle) {
+                clip = FCPBridge_resolveHandle(handle);
+            }
+
+            if (!clip && (indexNum || name)) {
+                // Get all clips and find by index or name
+                id libs = ((id (*)(id, SEL))objc_msgSend)(
+                    objc_getClass("FFLibraryDocument"), @selector(copyActiveLibraries));
+                if ([libs isKindOfClass:[NSArray class]] && [(NSArray *)libs count] > 0) {
+                    id library = [(NSArray *)libs firstObject];
+                    SEL eventsSel = NSSelectorFromString(@"events");
+                    if ([library respondsToSelector:eventsSel]) {
+                        id events = ((id (*)(id, SEL))objc_msgSend)(library, eventsSel);
+                        NSInteger targetIdx = indexNum ? [indexNum integerValue] : -1;
+                        NSString *lowerName = [name lowercaseString];
+                        NSInteger currentIdx = 0;
+
+                        for (id event in (NSArray *)events) {
+                            SEL clipsSel = NSSelectorFromString(@"ownedClips");
+                            if (![event respondsToSelector:clipsSel]) continue;
+                            id clips = ((id (*)(id, SEL))objc_msgSend)(event, clipsSel);
+                            if (![clips isKindOfClass:[NSArray class]]) continue;
+
+                            for (id c in (NSArray *)clips) {
+                                if (currentIdx == targetIdx) { clip = c; break; }
+                                if (name && [c respondsToSelector:@selector(displayName)]) {
+                                    NSString *dn = ((id (*)(id, SEL))objc_msgSend)(c, @selector(displayName));
+                                    if (dn && [[dn lowercaseString] containsString:lowerName]) {
+                                        clip = c;
+                                        break;
+                                    }
+                                }
+                                currentIdx++;
+                            }
+                            if (clip) break;
+                        }
+                    }
+                }
+            }
+
+            if (!clip) {
+                result = @{@"error": @"Clip not found. Provide handle, index, or name."};
+                return;
+            }
+
+            // Get the organizer filmstrip module and select this clip
+            id app = ((id (*)(id, SEL))objc_msgSend)(
+                objc_getClass("NSApplication"), @selector(sharedApplication));
+            id delegate = ((id (*)(id, SEL))objc_msgSend)(app, @selector(delegate));
+
+            // Try to get the media browser and select the clip
+            SEL browserSel = NSSelectorFromString(@"mediaBrowserContainerModule");
+            id browserContainer = nil;
+            if ([delegate respondsToSelector:browserSel]) {
+                browserContainer = ((id (*)(id, SEL))objc_msgSend)(delegate, browserSel);
+            }
+
+            // Create a media range for the full clip and select it in the browser
+            // Use FigTimeRangeAndObject to wrap the clip
+            Class rangeObjClass = objc_getClass("FigTimeRangeAndObject");
+            if (rangeObjClass && clip) {
+                // Get the clip's clipped range
+                FCPBridge_CMTimeRange clipRange = {0};
+                if ([clip respondsToSelector:@selector(clippedRange)]) {
+                    clipRange = ((FCPBridge_CMTimeRange (*)(id, SEL))objc_msgSend)(clip, @selector(clippedRange));
+                } else if ([clip respondsToSelector:@selector(duration)]) {
+                    FCPBridge_CMTime dur = ((FCPBridge_CMTime (*)(id, SEL))objc_msgSend)(clip, @selector(duration));
+                    clipRange.start = (FCPBridge_CMTime){0, dur.timescale, 1, 0};
+                    clipRange.duration = dur;
+                }
+
+                SEL rangeAndObjSel = NSSelectorFromString(@"rangeAndObjectWithRange:andObject:");
+                if ([(id)rangeObjClass respondsToSelector:rangeAndObjSel]) {
+                    id mediaRange = ((id (*)(id, SEL, FCPBridge_CMTimeRange, id))objc_msgSend)(
+                        (id)rangeObjClass, rangeAndObjSel, clipRange, clip);
+
+                    if (mediaRange) {
+                        // Select the media range in the browser filmstrip
+                        SEL filmstripSel = NSSelectorFromString(@"filmstripModule");
+                        id filmstrip = nil;
+                        if (browserContainer && [browserContainer respondsToSelector:filmstripSel]) {
+                            filmstrip = ((id (*)(id, SEL))objc_msgSend)(browserContainer, filmstripSel);
+                        }
+                        if (!filmstrip) {
+                            // Try getting through organizer
+                            SEL orgSel = NSSelectorFromString(@"organizerModule");
+                            id organizer = [delegate respondsToSelector:orgSel]
+                                ? ((id (*)(id, SEL))objc_msgSend)(delegate, orgSel) : nil;
+                            if (organizer) {
+                                SEL itemsSel = NSSelectorFromString(@"itemsModule");
+                                filmstrip = [organizer respondsToSelector:itemsSel]
+                                    ? ((id (*)(id, SEL))objc_msgSend)(organizer, itemsSel) : nil;
+                            }
+                        }
+
+                        if (filmstrip) {
+                            SEL selectSel = NSSelectorFromString(@"_selectMediaRanges:");
+                            if ([filmstrip respondsToSelector:selectSel]) {
+                                NSArray *ranges = @[mediaRange];
+                                ((void (*)(id, SEL, id))objc_msgSend)(filmstrip, selectSel, ranges);
+                                [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Now simulate pressing E (keycode 14) to append to storyline
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+            FCPBridge_simulateKeyPress(14, @"e", 0); // E key = Append to Storyline
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+
+            NSString *clipName = @"";
+            if ([clip respondsToSelector:@selector(displayName)])
+                clipName = ((id (*)(id, SEL))objc_msgSend)(clip, @selector(displayName)) ?: @"";
+
+            result = @{@"status": @"ok", @"clip": clipName, @"action": @"appendToStoryline"};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Failed to append clip"};
+}
+
+#pragma mark - Menu Execute Handler
+
+static NSDictionary *FCPBridge_handleMenuExecute(NSDictionary *params) {
+    NSArray *menuPath = params[@"menuPath"];
+    if (!menuPath || menuPath.count < 2) {
+        return @{@"error": @"menuPath array required (e.g. [\"File\", \"New\", \"Project...\"])"};
+    }
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id app = ((id (*)(id, SEL))objc_msgSend)(
+                objc_getClass("NSApplication"), @selector(sharedApplication));
+            NSMenu *mainMenu = ((id (*)(id, SEL))objc_msgSend)(app, @selector(mainMenu));
+            if (!mainMenu) {
+                result = @{@"error": @"No main menu found"};
+                return;
+            }
+
+            // Navigate through the menu hierarchy
+            NSMenu *currentMenu = mainMenu;
+            NSMenuItem *targetItem = nil;
+
+            for (NSUInteger i = 0; i < menuPath.count; i++) {
+                NSString *title = menuPath[i];
+                NSMenuItem *item = nil;
+
+                // Search for matching menu item (case-insensitive, trimmed)
+                for (NSInteger j = 0; j < [currentMenu numberOfItems]; j++) {
+                    NSMenuItem *candidate = [currentMenu itemAtIndex:j];
+                    NSString *candidateTitle = [candidate title];
+                    // Match exact or without trailing ellipsis/dots
+                    if ([candidateTitle caseInsensitiveCompare:title] == NSOrderedSame ||
+                        [[candidateTitle stringByReplacingOccurrencesOfString:@"…" withString:@""]
+                            caseInsensitiveCompare:
+                            [title stringByReplacingOccurrencesOfString:@"..." withString:@""]] == NSOrderedSame ||
+                        [[candidateTitle stringByReplacingOccurrencesOfString:@"…" withString:@""]
+                            caseInsensitiveCompare:title] == NSOrderedSame) {
+                        item = candidate;
+                        break;
+                    }
+                }
+
+                if (!item) {
+                    // Build list of available items for error message
+                    NSMutableArray *available = [NSMutableArray array];
+                    for (NSInteger j = 0; j < [currentMenu numberOfItems]; j++) {
+                        NSMenuItem *candidate = [currentMenu itemAtIndex:j];
+                        if (![candidate isSeparatorItem]) {
+                            [available addObject:[candidate title]];
+                        }
+                    }
+                    result = @{@"error": [NSString stringWithFormat:@"Menu item '%@' not found. Available: %@",
+                                title, [available componentsJoinedByString:@", "]]};
+                    return;
+                }
+
+                if (i == menuPath.count - 1) {
+                    // Last item - this is the target
+                    targetItem = item;
+                } else {
+                    // Navigate into submenu
+                    NSMenu *submenu = [item submenu];
+                    if (!submenu) {
+                        result = @{@"error": [NSString stringWithFormat:@"'%@' has no submenu", title]};
+                        return;
+                    }
+                    currentMenu = submenu;
+                }
+            }
+
+            if (!targetItem) {
+                result = @{@"error": @"Target menu item not found"};
+                return;
+            }
+
+            if (![targetItem isEnabled]) {
+                result = @{@"error": [NSString stringWithFormat:@"Menu item '%@' is disabled",
+                            [targetItem title]]};
+                return;
+            }
+
+            // Execute the menu item's action
+            SEL action = [targetItem action];
+            id target = [targetItem target];
+            if (action) {
+                if (target) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(target, action, targetItem);
+                } else {
+                    // Send through responder chain
+                    ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
+                        app, @selector(sendAction:to:from:), action, nil, targetItem);
+                }
+                result = @{@"status": @"ok", @"menuItem": [targetItem title],
+                          @"action": NSStringFromSelector(action)};
+            } else {
+                result = @{@"error": @"Menu item has no action"};
+            }
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Menu execute failed"};
+}
+
+static NSDictionary *FCPBridge_handleMenuList(NSDictionary *params) {
+    NSString *menuName = params[@"menu"]; // optional: specific top-level menu
+    NSNumber *depth = params[@"depth"] ?: @(2);
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id app = ((id (*)(id, SEL))objc_msgSend)(
+                objc_getClass("NSApplication"), @selector(sharedApplication));
+            NSMenu *mainMenu = ((id (*)(id, SEL))objc_msgSend)(app, @selector(mainMenu));
+            if (!mainMenu) {
+                result = @{@"error": @"No main menu found"};
+                return;
+            }
+
+            // Recursive helper to build menu tree
+            __block id __weak (^weakBuildMenu)(NSMenu *, int);
+            __block id (^buildMenu)(NSMenu *, int);
+            weakBuildMenu = buildMenu = ^id(NSMenu *menu, int maxDepth) {
+                NSMutableArray *items = [NSMutableArray array];
+                for (NSInteger i = 0; i < [menu numberOfItems]; i++) {
+                    NSMenuItem *item = [menu itemAtIndex:i];
+                    if ([item isSeparatorItem]) continue;
+
+                    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+                    entry[@"title"] = [item title];
+                    entry[@"enabled"] = @([item isEnabled]);
+                    entry[@"checked"] = @([item state] == NSControlStateValueOn);
+
+                    NSString *shortcut = [item keyEquivalent];
+                    if (shortcut.length > 0) {
+                        NSMutableString *combo = [NSMutableString string];
+                        NSEventModifierFlags mods = [item keyEquivalentModifierMask];
+                        if (mods & NSEventModifierFlagCommand) [combo appendString:@"⌘"];
+                        if (mods & NSEventModifierFlagShift) [combo appendString:@"⇧"];
+                        if (mods & NSEventModifierFlagOption) [combo appendString:@"⌥"];
+                        if (mods & NSEventModifierFlagControl) [combo appendString:@"⌃"];
+                        [combo appendString:shortcut];
+                        entry[@"shortcut"] = combo;
+                    }
+
+                    if ([item hasSubmenu] && maxDepth > 0) {
+                        entry[@"submenu"] = weakBuildMenu([item submenu], maxDepth - 1);
+                    } else if ([item hasSubmenu]) {
+                        entry[@"hasSubmenu"] = @YES;
+                    }
+
+                    [items addObject:entry];
+                }
+                return items;
+            };
+
+            if (menuName) {
+                // Find specific top-level menu
+                for (NSInteger i = 0; i < [mainMenu numberOfItems]; i++) {
+                    NSMenuItem *item = [mainMenu itemAtIndex:i];
+                    if ([[item title] caseInsensitiveCompare:menuName] == NSOrderedSame && [item hasSubmenu]) {
+                        result = @{@"menu": menuName, @"items": buildMenu([item submenu], depth.intValue)};
+                        return;
+                    }
+                }
+                result = @{@"error": [NSString stringWithFormat:@"Menu '%@' not found", menuName]};
+            } else {
+                // List all top-level menus
+                result = @{@"menus": buildMenu(mainMenu, depth.intValue)};
+            }
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Menu list failed"};
+}
+
+#pragma mark - Effect Parameter Helpers
+
+// Get the selected clip's effect stack, creating it if needed
+static id FCPBridge_getSelectedClipEffectStack(id timeline, id *outClip) {
+    if (!timeline) return nil;
+
+    // Get selected items
+    NSArray *selected = nil;
+    SEL selSel = NSSelectorFromString(@"selectedItems:includeItemBeforePlayheadIfLast:");
+    if ([timeline respondsToSelector:selSel]) {
+        id r = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)(timeline, selSel, NO, YES);
+        if ([r isKindOfClass:[NSArray class]]) selected = (NSArray *)r;
+    }
+    if (!selected || selected.count == 0) return nil;
+
+    id clip = selected[0];
+    if (outClip) *outClip = clip;
+
+    // If clip is a collection (compound/storyline), get the first media component's effectStack
+    if ([clip isKindOfClass:objc_getClass("FFAnchoredCollection")]) {
+        @try {
+            id items = [clip valueForKey:@"containedItems"];
+            if ([items isKindOfClass:[NSArray class]] && [(NSArray *)items count] > 0) {
+                id firstItem = [(NSArray *)items firstObject];
+                if ([firstItem respondsToSelector:@selector(effectStack)]) {
+                    id es = ((id (*)(id, SEL))objc_msgSend)(firstItem, @selector(effectStack));
+                    if (es) { if (outClip) *outClip = firstItem; return es; }
+                }
+            }
+        } @catch (NSException *e) {}
+    }
+
+    // Direct effectStack access
+    if ([clip respondsToSelector:@selector(effectStack)]) {
+        return ((id (*)(id, SEL))objc_msgSend)(clip, @selector(effectStack));
+    }
+    return nil;
+}
+
+// Read a channel's value at a given time (seconds)
+static NSDictionary *FCPBridge_readChannel(id channel, double timeSeconds) {
+    if (!channel) return nil;
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    info[@"class"] = NSStringFromClass([channel class]);
+
+    @try {
+        // Get name
+        SEL nameSel = NSSelectorFromString(@"name");
+        if ([channel respondsToSelector:nameSel]) {
+            id name = ((id (*)(id, SEL))objc_msgSend)(channel, nameSel);
+            if (name) info[@"name"] = [name description];
+        }
+    } @catch (NSException *e) {}
+
+    // Read value at time
+    @try {
+        SEL valSel = NSSelectorFromString(@"doubleValueAtTime:");
+        if ([channel respondsToSelector:valSel]) {
+            FCPBridge_CMTime t = {(int64_t)(timeSeconds * 600), 600, 1, 0};
+            double val = ((double (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(channel, valSel, t);
+            info[@"value"] = @(val);
+        }
+    } @catch (NSException *e) {}
+
+    // Read default
+    @try {
+        SEL defSel = NSSelectorFromString(@"defaultCurveDoubleValue");
+        if ([channel respondsToSelector:defSel]) {
+            double def = ((double (*)(id, SEL))objc_msgSend)(channel, defSel);
+            info[@"default"] = @(def);
+        }
+    } @catch (NSException *e) {}
+
+    // Read min/max
+    @try {
+        SEL minSel = NSSelectorFromString(@"minCurveDoubleValue");
+        SEL maxSel = NSSelectorFromString(@"maxCurveDoubleValue");
+        if ([channel respondsToSelector:minSel])
+            info[@"min"] = @(((double (*)(id, SEL))objc_msgSend)(channel, minSel));
+        if ([channel respondsToSelector:maxSel])
+            info[@"max"] = @(((double (*)(id, SEL))objc_msgSend)(channel, maxSel));
+    } @catch (NSException *e) {}
+
+    return info;
+}
+
+// Get all channels from an effect recursively
+static void FCPBridge_collectChannels(id obj, NSMutableArray *channels, NSString *prefix, int depth) {
+    if (!obj || depth > 8) return;
+
+    // If this is itself a channel with a double value, add it
+    if ([obj respondsToSelector:NSSelectorFromString(@"doubleValueAtTime:")]) {
+        NSString *name = prefix ?: @"";
+        @try {
+            SEL nSel = NSSelectorFromString(@"name");
+            if ([obj respondsToSelector:nSel]) {
+                id n = ((id (*)(id, SEL))objc_msgSend)(obj, nSel);
+                if (n) name = [n description];
+            }
+        } @catch (NSException *e) {}
+
+        NSMutableDictionary *ch = [NSMutableDictionary dictionary];
+        ch[@"name"] = name;
+        ch[@"handle"] = FCPBridge_storeHandle(obj);
+
+        NSDictionary *vals = FCPBridge_readChannel(obj, 0);
+        if (vals[@"value"]) ch[@"value"] = vals[@"value"];
+        if (vals[@"min"]) ch[@"min"] = vals[@"min"];
+        if (vals[@"max"]) ch[@"max"] = vals[@"max"];
+        if (vals[@"default"]) ch[@"default"] = vals[@"default"];
+        [channels addObject:ch];
+    }
+
+    // Try to get sub-channels
+    @try {
+        SEL subSel = NSSelectorFromString(@"channels");
+        if ([obj respondsToSelector:subSel]) {
+            id subs = ((id (*)(id, SEL))objc_msgSend)(obj, subSel);
+            if ([subs isKindOfClass:[NSArray class]]) {
+                for (id sub in (NSArray *)subs) {
+                    FCPBridge_collectChannels(sub, channels, nil, depth + 1);
+                }
+            }
+        }
+    } @catch (NSException *e) {}
+}
+
+#pragma mark - Inspector Handlers
+
+// Helper: read a double from a channel at time=0 (kCMTimeIndefinite for constant)
+static double FCPBridge_channelValue(id channel) {
+    if (!channel) return 0;
+    @try {
+        // Use kCMTimeIndefinite: {0, 0, 17, 0} for constant (non-keyframed) value
+        FCPBridge_CMTime t = {0, 0, 17, 0};
+        SEL sel = NSSelectorFromString(@"curveDoubleValueAtTime:");
+        if ([channel respondsToSelector:sel]) {
+            return ((double (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(channel, sel, t);
+        }
+        sel = NSSelectorFromString(@"doubleValueAtTime:");
+        if ([channel respondsToSelector:sel]) {
+            return ((double (*)(id, SEL, FCPBridge_CMTime))objc_msgSend)(channel, sel, t);
+        }
+    } @catch (NSException *e) {}
+    return 0;
+}
+
+// Helper: set a double on a channel
+static BOOL FCPBridge_setChannelValue(id channel, double value) {
+    if (!channel) return NO;
+    @try {
+        FCPBridge_CMTime t = {0, 0, 17, 0}; // kCMTimeIndefinite
+        SEL sel = NSSelectorFromString(@"setCurveDoubleValue:atTime:options:");
+        if ([channel respondsToSelector:sel]) {
+            ((void (*)(id, SEL, double, FCPBridge_CMTime, unsigned int))objc_msgSend)(
+                channel, sel, value, t, 0);
+            return YES;
+        }
+    } @catch (NSException *e) {}
+    return NO;
+}
+
+// Helper: get sub-channel by name (xChannel, yChannel, zChannel)
+static id FCPBridge_subChannel(id parentChannel, NSString *axis) {
+    if (!parentChannel) return nil;
+    @try {
+        NSString *selName = [NSString stringWithFormat:@"%@Channel", axis];
+        SEL sel = NSSelectorFromString(selName);
+        if ([parentChannel respondsToSelector:sel]) {
+            return ((id (*)(id, SEL))objc_msgSend)(parentChannel, sel);
+        }
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+static NSDictionary *FCPBridge_handleInspectorGet(NSDictionary *params) {
+    NSString *property = params[@"property"]; // "all", "compositing", "transform", "audio", "crop", "info", "channels"
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (!timeline) { result = @{@"error": @"No active timeline module"}; return; }
+
+            id clip = nil;
+            id effectStack = FCPBridge_getSelectedClipEffectStack(timeline, &clip);
+            if (!clip) { result = @{@"error": @"No clips selected"}; return; }
+
+            NSMutableDictionary *props = [NSMutableDictionary dictionary];
+
+            // Clip info (always included)
+            NSMutableDictionary *info = [NSMutableDictionary dictionary];
+            info[@"class"] = NSStringFromClass([clip class]);
+            @try {
+                if ([clip respondsToSelector:@selector(displayName)]) {
+                    id n = ((id (*)(id, SEL))objc_msgSend)(clip, @selector(displayName));
+                    if (n) info[@"name"] = [n description];
+                }
+            } @catch (NSException *e) {}
+            info[@"hasEffectStack"] = @(effectStack != nil);
+            props[@"info"] = info;
+
+            if (!effectStack) {
+                result = @{@"properties": props, @"note": @"Clip has no effect stack"};
+                return;
+            }
+
+            NSString *esHandle = FCPBridge_storeHandle(effectStack);
+            props[@"effectStackHandle"] = esHandle;
+
+            // COMPOSITING (opacity, blend mode)
+            if (!property || [property isEqualToString:@"all"] || [property isEqualToString:@"compositing"]) {
+                NSMutableDictionary *comp = [NSMutableDictionary dictionary];
+                @try {
+                    SEL blendSel = NSSelectorFromString(@"intrinsicCompositeEffect");
+                    id blendEffect = [effectStack respondsToSelector:blendSel]
+                        ? ((id (*)(id, SEL))objc_msgSend)(effectStack, blendSel) : nil;
+                    if (blendEffect) {
+                        id opChan = ((id (*)(id, SEL))objc_msgSend)(blendEffect, NSSelectorFromString(@"opacityChannel"));
+                        id bmChan = ((id (*)(id, SEL))objc_msgSend)(blendEffect, NSSelectorFromString(@"blendModeChannel"));
+                        if (opChan) {
+                            comp[@"opacity"] = @(FCPBridge_channelValue(opChan));
+                            comp[@"opacityHandle"] = FCPBridge_storeHandle(opChan);
+                        }
+                        if (bmChan) comp[@"blendModeHandle"] = FCPBridge_storeHandle(bmChan);
+                    } else {
+                        comp[@"opacity"] = @(1.0); // default
+                    }
+                } @catch (NSException *e) { comp[@"error"] = e.reason; }
+                props[@"compositing"] = comp;
+            }
+
+            // TRANSFORM (position, rotation, scale, anchor)
+            if (!property || [property isEqualToString:@"all"] || [property isEqualToString:@"transform"]) {
+                NSMutableDictionary *xform = [NSMutableDictionary dictionary];
+                @try {
+                    SEL xfSel = NSSelectorFromString(@"xform3DEffect");
+                    id xfEffect = [effectStack respondsToSelector:xfSel]
+                        ? ((id (*)(id, SEL))objc_msgSend)(effectStack, xfSel) : nil;
+                    if (xfEffect) {
+                        // Position
+                        id posCh = nil;
+                        @try { posCh = ((id (*)(id, SEL))objc_msgSend)(xfEffect, NSSelectorFromString(@"positionChannel3D")); } @catch(NSException *e) {}
+                        if (posCh) {
+                            xform[@"positionX"] = @(FCPBridge_channelValue(FCPBridge_subChannel(posCh, @"x")));
+                            xform[@"positionY"] = @(FCPBridge_channelValue(FCPBridge_subChannel(posCh, @"y")));
+                            xform[@"positionZ"] = @(FCPBridge_channelValue(FCPBridge_subChannel(posCh, @"z")));
+                        }
+                        // Scale
+                        id scaCh = nil;
+                        @try { scaCh = ((id (*)(id, SEL))objc_msgSend)(xfEffect, NSSelectorFromString(@"scaleChannel3D")); } @catch(NSException *e) {}
+                        if (scaCh) {
+                            xform[@"scaleX"] = @(FCPBridge_channelValue(FCPBridge_subChannel(scaCh, @"x")));
+                            xform[@"scaleY"] = @(FCPBridge_channelValue(FCPBridge_subChannel(scaCh, @"y")));
+                        }
+                        // Rotation
+                        id rotCh = nil;
+                        @try { rotCh = ((id (*)(id, SEL))objc_msgSend)(xfEffect, NSSelectorFromString(@"rotationChannel3D")); } @catch(NSException *e) {}
+                        if (rotCh) {
+                            xform[@"rotation"] = @(FCPBridge_channelValue(FCPBridge_subChannel(rotCh, @"z")));
+                        }
+                        // Anchor
+                        id ancCh = nil;
+                        @try { ancCh = ((id (*)(id, SEL))objc_msgSend)(xfEffect, NSSelectorFromString(@"anchorChannel3D")); } @catch(NSException *e) {}
+                        if (ancCh) {
+                            xform[@"anchorX"] = @(FCPBridge_channelValue(FCPBridge_subChannel(ancCh, @"x")));
+                            xform[@"anchorY"] = @(FCPBridge_channelValue(FCPBridge_subChannel(ancCh, @"y")));
+                        }
+                    } else {
+                        xform[@"positionX"] = @(0); xform[@"positionY"] = @(0);
+                        xform[@"scaleX"] = @(100); xform[@"scaleY"] = @(100);
+                        xform[@"rotation"] = @(0);
+                    }
+                } @catch (NSException *e) { xform[@"error"] = e.reason; }
+                props[@"transform"] = xform;
+            }
+
+            // AUDIO (volume)
+            if (!property || [property isEqualToString:@"all"] || [property isEqualToString:@"audio"]) {
+                NSMutableDictionary *audio = [NSMutableDictionary dictionary];
+                @try {
+                    SEL volSel = NSSelectorFromString(@"audioLevelChannel");
+                    id volChan = [effectStack respondsToSelector:volSel]
+                        ? ((id (*)(id, SEL))objc_msgSend)(effectStack, volSel) : nil;
+                    if (volChan) {
+                        audio[@"volume"] = @(FCPBridge_channelValue(volChan));
+                        audio[@"volumeHandle"] = FCPBridge_storeHandle(volChan);
+                    }
+                } @catch (NSException *e) { audio[@"error"] = e.reason; }
+                props[@"audio"] = audio;
+            }
+
+            // CROP
+            if (!property || [property isEqualToString:@"all"] || [property isEqualToString:@"crop"]) {
+                NSMutableDictionary *crop = [NSMutableDictionary dictionary];
+                @try {
+                    id cropEff = nil;
+                    SEL cropSel = NSSelectorFromString(@"cropEffect");
+                    if ([effectStack respondsToSelector:cropSel])
+                        cropEff = ((id (*)(id, SEL))objc_msgSend)(effectStack, cropSel);
+                    if (cropEff) {
+                        id (^getCh)(NSString *) = ^id(NSString *name) {
+                            @try {
+                                SEL s = NSSelectorFromString([NSString stringWithFormat:@"%@Channel", name]);
+                                if ([cropEff respondsToSelector:s])
+                                    return ((id (*)(id, SEL))objc_msgSend)(cropEff, s);
+                            } @catch (NSException *e) {}
+                            return nil;
+                        };
+                        id lCh = getCh(@"left"); if (lCh) crop[@"left"] = @(FCPBridge_channelValue(lCh));
+                        id rCh = getCh(@"right"); if (rCh) crop[@"right"] = @(FCPBridge_channelValue(rCh));
+                        id tCh = getCh(@"top"); if (tCh) crop[@"top"] = @(FCPBridge_channelValue(tCh));
+                        id bCh = getCh(@"bottom"); if (bCh) crop[@"bottom"] = @(FCPBridge_channelValue(bCh));
+                    }
+                } @catch (NSException *e) { crop[@"error"] = e.reason; }
+                props[@"crop"] = crop;
+            }
+
+            // ALL EFFECT CHANNELS (for advanced access)
+            if ([property isEqualToString:@"channels"]) {
+                NSMutableArray *channels = [NSMutableArray array];
+                // Get all effects and their channels
+                @try {
+                    SEL efSel = NSSelectorFromString(@"visibleEffects");
+                    if ([effectStack respondsToSelector:efSel]) {
+                        NSArray *effects = ((id (*)(id, SEL))objc_msgSend)(effectStack, efSel);
+                        for (id effect in effects) {
+                            FCPBridge_collectChannels(effect, channels, nil, 0);
+                        }
+                    }
+                    // Also get intrinsic channels
+                    SEL icSel = NSSelectorFromString(@"intrinsicChannels");
+                    if ([effectStack respondsToSelector:icSel]) {
+                        id intrinsic = ((id (*)(id, SEL))objc_msgSend)(effectStack, icSel);
+                        if (intrinsic) FCPBridge_collectChannels(intrinsic, channels, @"intrinsic", 0);
+                    }
+                } @catch (NSException *e) {}
+                props[@"channels"] = channels;
+            }
+
+            result = @{@"properties": props};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Inspector get failed"};
+}
+
+static NSDictionary *FCPBridge_handleInspectorSet(NSDictionary *params) {
+    NSString *property = params[@"property"]; // "opacity", "positionX", "positionY", "rotation", "scaleX", "scaleY", "volume", etc.
+    NSNumber *value = params[@"value"];
+    if (!property || !value) return @{@"error": @"property and value parameters required"};
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id timeline = FCPBridge_getActiveTimelineModule();
+            if (!timeline) { result = @{@"error": @"No active timeline module"}; return; }
+
+            id clip = nil;
+            id effectStack = FCPBridge_getSelectedClipEffectStack(timeline, &clip);
+            if (!effectStack) { result = @{@"error": @"No clip selected or clip has no effect stack"}; return; }
+
+            double val = [value doubleValue];
+            BOOL success = NO;
+            NSString *desc = [NSString stringWithFormat:@"Set %@", property];
+
+            // Begin undo action
+            @try {
+                SEL beginSel = NSSelectorFromString(@"actionBegin:animationHint:deferUpdates:");
+                if ([effectStack respondsToSelector:beginSel]) {
+                    ((void (*)(id, SEL, id, id, BOOL))objc_msgSend)(
+                        effectStack, beginSel, desc, nil, YES);
+                }
+            } @catch (NSException *e) {}
+
+            // OPACITY
+            if ([property isEqualToString:@"opacity"]) {
+                @try {
+                    SEL bSel = NSSelectorFromString(@"intrinsicCompositeEffectCreateIfAbsent:");
+                    id blendEffect = ((id (*)(id, SEL, BOOL))objc_msgSend)(effectStack, bSel, YES);
+                    id opChan = ((id (*)(id, SEL))objc_msgSend)(blendEffect, NSSelectorFromString(@"opacityChannel"));
+                    success = FCPBridge_setChannelValue(opChan, val);
+                } @catch (NSException *e) {}
+            }
+            // TRANSFORM: position, scale, rotation, anchor
+            else if ([property hasPrefix:@"position"] || [property hasPrefix:@"scale"] ||
+                     [property hasPrefix:@"rotation"] || [property hasPrefix:@"anchor"]) {
+                @try {
+                    // Get or create xform3D effect
+                    id xfEffect = nil;
+                    SEL xfSel = NSSelectorFromString(@"xform3DEffect");
+                    if ([effectStack respondsToSelector:xfSel])
+                        xfEffect = ((id (*)(id, SEL))objc_msgSend)(effectStack, xfSel);
+                    // Create if absent using the known effect ID
+                    if (!xfEffect) {
+                        SEL addSel = NSSelectorFromString(@"addIntrinsicEffectForEffectID:");
+                        if ([effectStack respondsToSelector:addSel]) {
+                            xfEffect = ((id (*)(id, SEL, id))objc_msgSend)(
+                                effectStack, addSel, @"HEXForm3D");
+                        }
+                    }
+                    if (xfEffect) {
+                        NSString *channelMethod = nil;
+                        NSString *axis = nil;
+                        if ([property isEqualToString:@"positionX"]) { channelMethod = @"positionChannel3D"; axis = @"x"; }
+                        else if ([property isEqualToString:@"positionY"]) { channelMethod = @"positionChannel3D"; axis = @"y"; }
+                        else if ([property isEqualToString:@"positionZ"]) { channelMethod = @"positionChannel3D"; axis = @"z"; }
+                        else if ([property isEqualToString:@"scaleX"]) { channelMethod = @"scaleChannel3D"; axis = @"x"; }
+                        else if ([property isEqualToString:@"scaleY"]) { channelMethod = @"scaleChannel3D"; axis = @"y"; }
+                        else if ([property isEqualToString:@"rotation"]) { channelMethod = @"rotationChannel3D"; axis = @"z"; }
+                        else if ([property isEqualToString:@"anchorX"]) { channelMethod = @"anchorChannel3D"; axis = @"x"; }
+                        else if ([property isEqualToString:@"anchorY"]) { channelMethod = @"anchorChannel3D"; axis = @"y"; }
+
+                        if (channelMethod && axis) {
+                            id ch3d = ((id (*)(id, SEL))objc_msgSend)(xfEffect, NSSelectorFromString(channelMethod));
+                            id axisCh = FCPBridge_subChannel(ch3d, axis);
+                            success = FCPBridge_setChannelValue(axisCh, val);
+                        }
+                    }
+                } @catch (NSException *e) {}
+            }
+            // VOLUME
+            else if ([property isEqualToString:@"volume"]) {
+                @try {
+                    SEL volSel = NSSelectorFromString(@"audioLevelChannel");
+                    id volChan = [effectStack respondsToSelector:volSel]
+                        ? ((id (*)(id, SEL))objc_msgSend)(effectStack, volSel) : nil;
+                    if (volChan) success = FCPBridge_setChannelValue(volChan, val);
+                } @catch (NSException *e) {}
+            }
+            // CHANNEL BY HANDLE (generic - set any channel by its handle)
+            else if ([property hasPrefix:@"handle:"]) {
+                NSString *handle = [property substringFromIndex:7];
+                id channel = FCPBridge_resolveHandle(handle);
+                if (channel) success = FCPBridge_setChannelValue(channel, val);
+                else result = @{@"error": @"Handle not found"};
+            }
+
+            // End undo action
+            @try {
+                SEL endSel = NSSelectorFromString(@"actionEnd:save:error:");
+                if ([effectStack respondsToSelector:endSel]) {
+                    ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(
+                        effectStack, endSel, desc, YES, nil);
+                }
+            } @catch (NSException *e) {}
+
+            if (!result) {
+                result = success
+                    ? @{@"status": @"ok", @"property": property, @"value": @(val)}
+                    : @{@"error": [NSString stringWithFormat:@"Failed to set '%@'", property]};
+            }
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Inspector set failed"};
+}
+
+#pragma mark - View/Panel Toggle Handler
+
+static NSDictionary *FCPBridge_handleViewToggle(NSDictionary *params) {
+    NSString *panel = params[@"panel"];
+    if (!panel) return @{@"error": @"panel parameter required"};
+
+    // Map panel names to selectors
+    NSDictionary *panelMap = @{
+        @"inspector":       @"toggleInspector:",
+        @"timeline":        @"toggleTimeline:",
+        @"browser":         @"toggleBrowser:",
+        @"eventViewer":     @"toggleEventViewer:",
+        @"effectsBrowser":  @"toggleEffectsBrowser:",
+        @"transitionsBrowser": @"toggleTransitionsBrowser:",
+        @"videoScopes":     @"toggleVideoScopes:",
+        @"histogram":       @"toggleHistogram:",
+        @"vectorscope":     @"toggleVectorscope:",
+        @"waveform":        @"toggleWaveformMonitor:",
+        @"audioMeter":      @"toggleAudioMeters:",
+        @"keywordEditor":   @"toggleKeywordEditor:",
+        @"timelineIndex":   @"toggleTimelineIndex:",
+        @"precisionEditor": @"showPrecisionEditor:",
+        @"retimeEditor":    @"toggleRetimeEditor:",
+        @"audioCurves":     @"toggleAudioCurves:",
+        @"videoAnimation":  @"showTimelineCurveEditor:",
+        @"audioAnimation":  @"showTimelineCurveEditor:",
+        @"multicamViewer":  @"toggleAngleViewer:",
+        @"360viewer":       @"toggle360Viewer:",
+        @"fullscreenViewer": @"toggleFullScreenViewer:",
+        @"backgroundTasks": @"goToBackgroundTaskList:",
+        @"voiceover":       @"toggleVoiceoverRecordView:",
+        @"comparisonViewer": @"toggleComparisonViewer:",
+    };
+
+    NSString *selector = panelMap[panel];
+    if (!selector) {
+        return @{@"error": [NSString stringWithFormat:@"Unknown panel '%@'. Available: %@",
+                    panel, [[panelMap allKeys] componentsJoinedByString:@", "]]};
+    }
+
+    return FCPBridge_sendAppAction(selector);
+}
+
+#pragma mark - Workspace Handler
+
+static NSDictionary *FCPBridge_handleWorkspace(NSDictionary *params) {
+    NSString *workspace = params[@"workspace"];
+    if (!workspace) return @{@"error": @"workspace parameter required"};
+
+    NSDictionary *workspaceMap = @{
+        @"default":       @"Default",
+        @"organize":      @"Organize",
+        @"colorEffects":  @"Color & Effects",
+        @"dualDisplays":  @"Dual Displays",
+    };
+
+    NSString *menuTitle = workspaceMap[workspace];
+    if (!menuTitle) {
+        return @{@"error": [NSString stringWithFormat:@"Unknown workspace '%@'. Available: default, organize, colorEffects, dualDisplays", workspace]};
+    }
+
+    return FCPBridge_handleMenuExecute(@{@"menuPath": @[@"Window", @"Workspaces", menuTitle]});
+}
+
+#pragma mark - Roles Handler
+
+static NSDictionary *FCPBridge_handleRolesAssign(NSDictionary *params) {
+    NSString *roleType = params[@"type"]; // "audio", "video", "caption"
+    NSString *roleName = params[@"role"]; // e.g. "Dialogue", "Music", "Effects"
+    if (!roleType || !roleName) {
+        return @{@"error": @"type and role parameters required"};
+    }
+
+    // Build the menu path
+    NSString *menuCategory;
+    if ([roleType isEqualToString:@"audio"]) menuCategory = @"Assign Audio Roles";
+    else if ([roleType isEqualToString:@"video"]) menuCategory = @"Assign Video Roles";
+    else if ([roleType isEqualToString:@"caption"]) menuCategory = @"Assign Caption Roles";
+    else return @{@"error": @"type must be 'audio', 'video', or 'caption'"};
+
+    return FCPBridge_handleMenuExecute(@{@"menuPath": @[@"Modify", menuCategory, roleName]});
+}
+
+#pragma mark - Share/Export Handler
+
+static NSDictionary *FCPBridge_handleShareExport(NSDictionary *params) {
+    NSString *destination = params[@"destination"]; // optional: specific share destination
+
+    if (destination) {
+        // Try to use specific share destination via menu
+        return FCPBridge_handleMenuExecute(@{@"menuPath": @[@"File", @"Share", destination]});
+    } else {
+        // Use default share
+        return FCPBridge_sendAppAction(@"shareDefaultDestination:");
+    }
+}
+
+#pragma mark - Library/Project Management
+
+static NSDictionary *FCPBridge_handleProjectCreate(NSDictionary *params) {
+    // Trigger new project dialog - this opens the dialog
+    return FCPBridge_sendAppAction(@"newProject:");
+}
+
+static NSDictionary *FCPBridge_handleEventCreate(NSDictionary *params) {
+    return FCPBridge_sendAppAction(@"newEvent:");
+}
+
+static NSDictionary *FCPBridge_handleLibraryCreate(NSDictionary *params) {
+    return FCPBridge_sendAppAction(@"newLibrary:");
+}
+
+#pragma mark - Tool Selection Handler
+
+static NSDictionary *FCPBridge_handleToolSelect(NSDictionary *params) {
+    NSString *tool = params[@"tool"];
+    if (!tool) return @{@"error": @"tool parameter required"};
+
+    NSDictionary *toolMap = @{
+        @"select":    @"selectToolArrow:",
+        @"trim":      @"selectToolTrim:",
+        @"blade":     @"selectToolBlade:",
+        @"position":  @"selectToolPlacement:",
+        @"hand":      @"selectToolHand:",
+        @"zoom":      @"selectToolZoom:",
+        @"range":     @"selectToolRangeSelection:",
+    };
+
+    NSString *selector = toolMap[tool];
+    if (!selector) {
+        return @{@"error": [NSString stringWithFormat:@"Unknown tool '%@'. Available: %@",
+                    tool, [[toolMap allKeys] componentsJoinedByString:@", "]]};
+    }
+
+    return FCPBridge_sendAppAction(selector);
+}
+
+#pragma mark - Dialog Detection & Interaction
+
+// Recursively collect UI elements from a view hierarchy
+// Forward declarations for dialog helpers
+static NSArray<NSButton *> *FCPBridge_findButtonsInView(NSView *root);
+
+// Safe subview accessor - returns a COPY of the subviews array to avoid mutation crashes
+static NSArray *FCPBridge_safeSubviews(NSView *view) {
+    if (!view) return nil;
+    @try {
+        NSArray *subs = [view subviews];
+        return subs ? [subs copy] : nil; // copy to avoid mutation during iteration
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+
+static void FCPBridge_collectUIElements(NSView *view, NSMutableArray *buttons,
+                                         NSMutableArray *textFields, NSMutableArray *labels,
+                                         NSMutableArray *checkboxes, NSMutableArray *popups,
+                                         int depth) {
+    if (!view || depth > 15) return;
+
+    NSArray *subviews = FCPBridge_safeSubviews(view);
+    if (!subviews) return;
+
+    for (NSView *subview in subviews) {
+        if (!subview) continue;
+        @try {
+        if ([subview isKindOfClass:[NSButton class]]) {
+            NSButton *btn = (NSButton *)subview;
+            NSString *title = [btn title] ?: @"";
+            NSInteger bezelStyle = [btn bezelStyle];
+            BOOL isCheckbox = ([[btn className] containsString:@"Checkbox"] || [btn allowsMixedState]);
+            if (isCheckbox) {
+                [checkboxes addObject:@{
+                    @"title": title,
+                    @"checked": @([btn state] == NSControlStateValueOn),
+                    @"enabled": @([btn isEnabled]),
+                    @"tag": @([btn tag])
+                }];
+            } else if (title.length > 0) {
+                [buttons addObject:@{
+                    @"title": title,
+                    @"enabled": @([btn isEnabled]),
+                    @"tag": @([btn tag]),
+                    @"keyEquivalent": [btn keyEquivalent] ?: @"",
+                    @"bezelStyle": @(bezelStyle)
+                }];
+            }
+        } else if ([subview isKindOfClass:[NSTextField class]]) {
+            NSTextField *tf = (NSTextField *)subview;
+            if ([tf isEditable]) {
+                [textFields addObject:@{
+                    @"value": [tf stringValue] ?: @"",
+                    @"placeholder": [tf placeholderString] ?: @"",
+                    @"editable": @YES,
+                    @"tag": @([tf tag])
+                }];
+            } else {
+                NSString *text = [tf stringValue] ?: @"";
+                if (text.length > 0) {
+                    [labels addObject:@{
+                        @"text": text,
+                        @"tag": @([tf tag])
+                    }];
+                }
+            }
+        } else if ([subview isKindOfClass:[NSPopUpButton class]]) {
+            NSPopUpButton *popup = (NSPopUpButton *)subview;
+            NSMutableArray *items = [NSMutableArray array];
+            for (NSMenuItem *item in [popup itemArray]) {
+                if (![item isSeparatorItem]) {
+                    [items addObject:@{
+                        @"title": [item title] ?: @"",
+                        @"selected": @([popup selectedItem] == item)
+                    }];
+                }
+            }
+            [popups addObject:@{
+                @"selectedTitle": [[popup titleOfSelectedItem] ?: @"" copy],
+                @"items": items,
+                @"tag": @([popup tag])
+            }];
+        } else if ([subview isKindOfClass:[NSSegmentedControl class]]) {
+            NSSegmentedControl *seg = (NSSegmentedControl *)subview;
+            NSMutableArray *segments = [NSMutableArray array];
+            for (NSInteger i = 0; i < seg.segmentCount; i++) {
+                [segments addObject:@{
+                    @"label": [seg labelForSegment:i] ?: @"",
+                    @"selected": @(seg.selectedSegment == i),
+                    @"index": @(i)
+                }];
+            }
+            [labels addObject:@{@"text": @"[segmented control]", @"segments": segments}];
+        } else if ([subview isKindOfClass:[NSSlider class]]) {
+            NSSlider *slider = (NSSlider *)subview;
+            [labels addObject:@{
+                @"text": @"[slider]",
+                @"value": @([slider doubleValue]),
+                @"min": @([slider minValue]),
+                @"max": @([slider maxValue])
+            }];
+        }
+
+        } @catch (NSException *e) {
+            // Skip any view that throws when accessed
+        }
+
+        // Recurse into subviews
+        FCPBridge_collectUIElements(subview, buttons, textFields, labels,
+                                    checkboxes, popups, depth + 1);
+    }
+}
+
+static NSDictionary *FCPBridge_describeWindow(NSWindow *window) {
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    info[@"title"] = [window title] ?: @"";
+    info[@"class"] = NSStringFromClass([window class]);
+    info[@"visible"] = @([window isVisible]);
+    info[@"isSheet"] = @([window isSheet]);
+    info[@"isModal"] = @(window == [NSApp modalWindow]);
+    info[@"frame"] = NSStringFromRect([window frame]);
+
+    NSMutableArray *buttons = [NSMutableArray array];
+    NSMutableArray *textFields = [NSMutableArray array];
+    NSMutableArray *labels = [NSMutableArray array];
+    NSMutableArray *checkboxes = [NSMutableArray array];
+    NSMutableArray *popups = [NSMutableArray array];
+
+    FCPBridge_collectUIElements([window contentView], buttons, textFields,
+                                labels, checkboxes, popups, 0);
+
+    info[@"buttons"] = buttons;
+    info[@"textFields"] = textFields;
+    info[@"labels"] = labels;
+    info[@"checkboxes"] = checkboxes;
+    info[@"popups"] = popups;
+
+    return info;
+}
+
+static NSDictionary *FCPBridge_handleDialogDetect(NSDictionary *params) {
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            id app = ((id (*)(id, SEL))objc_msgSend)(
+                objc_getClass("NSApplication"), @selector(sharedApplication));
+
+            NSMutableArray *dialogs = [NSMutableArray array];
+
+            // Check for modal window
+            NSWindow *modalWindow = [NSApp modalWindow];
+            if (modalWindow) {
+                NSMutableDictionary *d = [FCPBridge_describeWindow(modalWindow) mutableCopy];
+                d[@"type"] = @"modal";
+                [dialogs addObject:d];
+            }
+
+            // Check for sheets on all windows
+            for (NSWindow *window in [NSApp windows]) {
+                NSWindow *sheet = [window attachedSheet];
+                if (sheet) {
+                    NSMutableDictionary *d = [FCPBridge_describeWindow(sheet) mutableCopy];
+                    d[@"type"] = @"sheet";
+                    d[@"parentWindow"] = [window title] ?: @"";
+                    [dialogs addObject:d];
+                }
+            }
+
+            // Check for any visible panels (alerts, floating windows, etc.)
+            for (NSWindow *window in [NSApp windows]) {
+                if (![window isVisible]) continue;
+                if (modalWindow && window == modalWindow) continue;
+
+                // Check if this is a panel/alert type window
+                BOOL isPanel = [window isKindOfClass:[NSPanel class]];
+                BOOL isAlert = [window isKindOfClass:NSClassFromString(@"NSAlertPanel") ?: [NSNull class]];
+                BOOL isSheet = [window isSheet];
+                BOOL isProgressPanel = [[window className] containsString:@"Progress"];
+                BOOL isSharePanel = [[window className] containsString:@"Share"];
+
+                // Check FCP-specific dialog classes
+                NSString *className = NSStringFromClass([window class]);
+                BOOL isFCPDialog = [className hasPrefix:@"FF"] && (
+                    [className containsString:@"Panel"] ||
+                    [className containsString:@"Sheet"] ||
+                    [className containsString:@"Alert"] ||
+                    [className containsString:@"Dialog"] ||
+                    [className containsString:@"Progress"] ||
+                    [className containsString:@"Window"] // Custom windows
+                );
+
+                if (isAlert || isProgressPanel || isSharePanel || isFCPDialog) {
+                    NSMutableDictionary *d = [FCPBridge_describeWindow(window) mutableCopy];
+                    d[@"type"] = isAlert ? @"alert" : (isProgressPanel ? @"progress" :
+                                  (isSharePanel ? @"share" : @"panel"));
+                    // Avoid duplicates
+                    BOOL isDupe = NO;
+                    for (NSDictionary *existing in dialogs) {
+                        if ([existing[@"title"] isEqualToString:d[@"title"]] &&
+                            [existing[@"class"] isEqualToString:d[@"class"]]) {
+                            isDupe = YES; break;
+                        }
+                    }
+                    if (!isDupe) [dialogs addObject:d];
+                }
+
+                // Also check for NSAlert-style windows (they have specific structure)
+                if (isPanel && !isSheet) {
+                    NSArray *buttons = [window contentView].subviews;
+                    BOOL hasAlertButton = NO;
+                    for (NSView *v in buttons) {
+                        if ([v isKindOfClass:[NSButton class]] &&
+                            [[(NSButton *)v keyEquivalent] isEqualToString:@"\r"]) {
+                            hasAlertButton = YES;
+                            break;
+                        }
+                    }
+                    if (hasAlertButton) {
+                        NSMutableDictionary *d = [FCPBridge_describeWindow(window) mutableCopy];
+                        d[@"type"] = @"alert";
+                        BOOL isDupe = NO;
+                        for (NSDictionary *existing in dialogs) {
+                            if ([existing[@"title"] isEqualToString:d[@"title"]]) {
+                                isDupe = YES; break;
+                            }
+                        }
+                        if (!isDupe) [dialogs addObject:d];
+                    }
+                }
+            }
+
+            result = @{
+                @"hasDialog": @(dialogs.count > 0),
+                @"dialogCount": @(dialogs.count),
+                @"dialogs": dialogs
+            };
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Dialog detect failed"};
+}
+
+static NSDictionary *FCPBridge_handleDialogClick(NSDictionary *params) {
+    NSString *buttonTitle = params[@"button"]; // button title to click
+    NSNumber *buttonIndex = params[@"index"];   // or button index (0-based)
+    if (!buttonTitle && !buttonIndex) {
+        return @{@"error": @"button (title) or index parameter required"};
+    }
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            // Find the dialog window (modal > sheet > panel)
+            NSWindow *dialogWindow = [NSApp modalWindow];
+
+            if (!dialogWindow) {
+                // Check for sheets
+                for (NSWindow *window in [NSApp windows]) {
+                    NSWindow *sheet = [window attachedSheet];
+                    if (sheet) { dialogWindow = sheet; break; }
+                }
+            }
+
+            if (!dialogWindow) {
+                // Check for visible panels
+                for (NSWindow *window in [NSApp windows]) {
+                    if (![window isVisible]) continue;
+                    if ([window isKindOfClass:[NSPanel class]] && ![window isSheet]) {
+                        NSString *className = NSStringFromClass([window class]);
+                        if ([className hasPrefix:@"FF"] || [className containsString:@"Alert"]) {
+                            dialogWindow = window;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!dialogWindow) {
+                result = @{@"error": @"No dialog found to interact with"};
+                return;
+            }
+
+            // Use BFS to safely find all buttons
+            NSArray<NSButton *> *buttonObjects = FCPBridge_findButtonsInView([dialogWindow contentView]);
+
+            NSButton *targetButton = nil;
+
+            if (buttonTitle) {
+                // Find button by title (case-insensitive)
+                for (NSButton *btn in buttonObjects) {
+                    if ([[btn title] caseInsensitiveCompare:buttonTitle] == NSOrderedSame) {
+                        targetButton = btn;
+                        break;
+                    }
+                }
+                if (!targetButton) {
+                    // Try partial match
+                    for (NSButton *btn in buttonObjects) {
+                        if ([[btn title] localizedCaseInsensitiveContainsString:buttonTitle]) {
+                            targetButton = btn;
+                            break;
+                        }
+                    }
+                }
+            } else if (buttonIndex) {
+                NSInteger idx = [buttonIndex integerValue];
+                if (idx >= 0 && idx < (NSInteger)buttonObjects.count) {
+                    targetButton = buttonObjects[idx];
+                }
+            }
+
+            if (!targetButton) {
+                NSMutableArray *available = [NSMutableArray array];
+                for (NSButton *btn in buttonObjects) {
+                    [available addObject:[btn title]];
+                }
+                result = @{@"error": [NSString stringWithFormat:@"Button '%@' not found. Available: %@",
+                            buttonTitle ?: [buttonIndex stringValue],
+                            [available componentsJoinedByString:@", "]]};
+                return;
+            }
+
+            if (![targetButton isEnabled]) {
+                result = @{@"error": [NSString stringWithFormat:@"Button '%@' is disabled", [targetButton title]]};
+                return;
+            }
+
+            // Click the button
+            [targetButton performClick:nil];
+
+            result = @{@"status": @"ok", @"clicked": [targetButton title],
+                      @"dialog": [dialogWindow title] ?: @""};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Dialog click failed"};
+}
+
+static NSDictionary *FCPBridge_handleDialogFill(NSDictionary *params) {
+    NSString *value = params[@"value"];
+    NSNumber *fieldIndex = params[@"index"] ?: @(0);
+    if (!value) return @{@"error": @"value parameter required"};
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            // Find dialog window
+            NSWindow *dialogWindow = [NSApp modalWindow];
+            if (!dialogWindow) {
+                for (NSWindow *window in [NSApp windows]) {
+                    @try {
+                        NSWindow *sheet = [window attachedSheet];
+                        if (sheet) { dialogWindow = sheet; break; }
+                    } @catch (NSException *e) {}
+                }
+            }
+            if (!dialogWindow) {
+                result = @{@"error": @"No dialog found"};
+                return;
+            }
+
+            // Use the collectUIElements function which has full safety
+            NSMutableArray *buttons = [NSMutableArray array];
+            NSMutableArray *textFields = [NSMutableArray array];
+            NSMutableArray *labels = [NSMutableArray array];
+            NSMutableArray *checkboxes = [NSMutableArray array];
+            NSMutableArray *popups = [NSMutableArray array];
+
+            FCPBridge_collectUIElements([dialogWindow contentView], buttons, textFields,
+                                        labels, checkboxes, popups, 0);
+
+            // textFields array already contains only editable fields (from collectUIElements)
+            // But we need the actual NSTextField objects, not dicts.
+            // So let's find them differently - use the first responder chain.
+
+            // Simple approach: find editable text fields using a breadth-first search
+            // with maximum safety
+            NSMutableArray *editableFields = [NSMutableArray array];
+            NSMutableArray *queue = [NSMutableArray arrayWithObject:[dialogWindow contentView]];
+
+            while (queue.count > 0 && editableFields.count < 20) {
+                NSView *current = queue[0];
+                [queue removeObjectAtIndex:0];
+                if (!current) continue;
+
+                @try {
+                    if ([current isKindOfClass:[NSTextField class]]) {
+                        NSTextField *tf = (NSTextField *)current;
+                        // Use respondsToSelector as extra safety
+                        if ([tf respondsToSelector:@selector(isEditable)] &&
+                            [tf respondsToSelector:@selector(setStringValue:)]) {
+                            BOOL editable = NO;
+                            @try { editable = [tf isEditable]; } @catch (NSException *e) {}
+                            if (editable) {
+                                [editableFields addObject:tf];
+                            }
+                        }
+                    }
+
+                    // Add child views to queue (BFS)
+                    NSArray *subs = FCPBridge_safeSubviews(current);
+                    if (subs) {
+                        [queue addObjectsFromArray:subs];
+                    }
+                } @catch (NSException *e) {
+                    // Skip this view entirely
+                }
+            }
+
+            NSInteger idx = [fieldIndex integerValue];
+            if (idx >= 0 && idx < (NSInteger)editableFields.count) {
+                NSTextField *field = editableFields[idx];
+                @try {
+                    [field setStringValue:value];
+                    result = @{@"status": @"ok", @"field": @(idx), @"value": value};
+                } @catch (NSException *e) {
+                    result = @{@"error": [NSString stringWithFormat:@"Cannot set field: %@", e.reason]};
+                }
+            } else {
+                result = @{@"error": [NSString stringWithFormat:@"Field index %ld not found (have %lu fields)",
+                            (long)idx, (unsigned long)editableFields.count]};
+            }
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Dialog fill failed"};
+}
+
+static NSDictionary *FCPBridge_handleDialogCheckbox(NSDictionary *params) {
+    NSString *checkboxTitle = params[@"checkbox"];
+    NSNumber *checked = params[@"checked"]; // YES/NO
+    if (!checkboxTitle) return @{@"error": @"checkbox (title) parameter required"};
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            NSWindow *dialogWindow = [NSApp modalWindow];
+            if (!dialogWindow) {
+                for (NSWindow *window in [NSApp windows]) {
+                    NSWindow *sheet = [window attachedSheet];
+                    if (sheet) { dialogWindow = sheet; break; }
+                }
+            }
+            if (!dialogWindow) { result = @{@"error": @"No dialog found"}; return; }
+
+            __block NSButton *targetCB = nil;
+            __block void (^findCB)(NSView *);
+            __weak void (^weakCB)(NSView *);
+            weakCB = findCB = ^(NSView *view) {
+                if (!view) return;
+                NSArray *subs = FCPBridge_safeSubviews(view);
+                if (!subs) return;
+                for (NSView *subview in subs) {
+                    if (!subview) continue;
+                    if ([subview isKindOfClass:[NSButton class]]) {
+                        NSButton *btn = (NSButton *)subview;
+                        if (([[btn className] containsString:@"Checkbox"] || [btn allowsMixedState]) &&
+                            [[btn title] localizedCaseInsensitiveContainsString:checkboxTitle]) {
+                            targetCB = btn;
+                            return;
+                        }
+                    }
+                    if (!targetCB) weakCB(subview);
+                }
+            };
+            findCB([dialogWindow contentView]);
+
+            if (!targetCB) {
+                result = @{@"error": [NSString stringWithFormat:@"Checkbox '%@' not found", checkboxTitle]};
+                return;
+            }
+
+            if (checked) {
+                [targetCB setState:[checked boolValue] ? NSControlStateValueOn : NSControlStateValueOff];
+            } else {
+                // Toggle
+                [targetCB performClick:nil];
+            }
+            result = @{@"status": @"ok", @"checkbox": [targetCB title],
+                      @"checked": @([targetCB state] == NSControlStateValueOn)};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Checkbox toggle failed"};
+}
+
+static NSDictionary *FCPBridge_handleDialogPopup(NSDictionary *params) {
+    NSString *selection = params[@"select"]; // item title to select
+    NSNumber *popupIndex = params[@"popupIndex"] ?: @(0); // which popup (if multiple)
+    if (!selection) return @{@"error": @"select parameter required"};
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            NSWindow *dialogWindow = [NSApp modalWindow];
+            if (!dialogWindow) {
+                for (NSWindow *window in [NSApp windows]) {
+                    NSWindow *sheet = [window attachedSheet];
+                    if (sheet) { dialogWindow = sheet; break; }
+                }
+            }
+            if (!dialogWindow) { result = @{@"error": @"No dialog found"}; return; }
+
+            NSMutableArray *popups = [NSMutableArray array];
+            __block void (^findPopups)(NSView *);
+            __weak void (^weakPU)(NSView *);
+            weakPU = findPopups = ^(NSView *view) {
+                if (!view) return;
+                NSArray *subs = FCPBridge_safeSubviews(view);
+                if (!subs) return;
+                for (NSView *subview in subs) {
+                    if (!subview) continue;
+                    if ([subview isKindOfClass:[NSPopUpButton class]]) {
+                        [popups addObject:subview];
+                    }
+                    weakPU(subview);
+                }
+            };
+            findPopups([dialogWindow contentView]);
+
+            NSInteger idx = [popupIndex integerValue];
+            if (idx >= 0 && idx < (NSInteger)popups.count) {
+                NSPopUpButton *popup = popups[idx];
+                [popup selectItemWithTitle:selection];
+                if ([popup selectedItem]) {
+                    // Trigger the action
+                    if ([popup action]) {
+                        ((void (*)(id, SEL, id))objc_msgSend)([popup target], [popup action], popup);
+                    }
+                    result = @{@"status": @"ok", @"selected": selection, @"popupIndex": @(idx)};
+                } else {
+                    NSMutableArray *available = [NSMutableArray array];
+                    for (NSMenuItem *item in [popup itemArray]) {
+                        if (![item isSeparatorItem]) [available addObject:[item title]];
+                    }
+                    result = @{@"error": [NSString stringWithFormat:@"Item '%@' not found. Available: %@",
+                                selection, [available componentsJoinedByString:@", "]]};
+                }
+            } else {
+                result = @{@"error": [NSString stringWithFormat:@"Popup index %ld not found (have %lu)",
+                            (long)idx, (unsigned long)popups.count]};
+            }
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Popup select failed"};
+}
+
+// BFS helper to find buttons safely in a view hierarchy
+static NSArray<NSButton *> *FCPBridge_findButtonsInView(NSView *root) {
+    NSMutableArray<NSButton *> *found = [NSMutableArray array];
+    if (!root) return found;
+    NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:root];
+    while (queue.count > 0 && found.count < 50) {
+        NSView *current = queue[0];
+        [queue removeObjectAtIndex:0];
+        if (!current) continue;
+        @try {
+            if ([current isKindOfClass:[NSButton class]]) {
+                NSButton *btn = (NSButton *)current;
+                if ([btn respondsToSelector:@selector(title)] && [btn title].length > 0) {
+                    [found addObject:btn];
+                }
+            }
+            NSArray *subs = FCPBridge_safeSubviews(current);
+            if (subs) [queue addObjectsFromArray:subs];
+        } @catch (NSException *e) {}
+    }
+    return found;
+}
+
+static NSDictionary *FCPBridge_handleDialogDismiss(NSDictionary *params) {
+    NSString *action = params[@"action"] ?: @"default";
+
+    __block NSDictionary *result = nil;
+    FCPBridge_executeOnMainThread(^{
+        @try {
+            NSWindow *dialogWindow = [NSApp modalWindow];
+            if (!dialogWindow) {
+                for (NSWindow *window in [NSApp windows]) {
+                    @try {
+                        NSWindow *sheet = [window attachedSheet];
+                        if (sheet) { dialogWindow = sheet; break; }
+                    } @catch (NSException *e) {}
+                }
+            }
+            if (!dialogWindow) {
+                result = @{@"error": @"No dialog to dismiss"};
+                return;
+            }
+
+            NSArray<NSButton *> *allButtons = FCPBridge_findButtonsInView([dialogWindow contentView]);
+
+            if ([action isEqualToString:@"cancel"]) {
+                NSButton *cancelBtn = nil;
+                for (NSButton *btn in allButtons) {
+                    @try {
+                        NSString *keyEq = [btn keyEquivalent] ?: @"";
+                        NSString *title = [btn title] ?: @"";
+                        if ([keyEq isEqualToString:@"\033"] ||
+                            [title caseInsensitiveCompare:@"Cancel"] == NSOrderedSame ||
+                            [title caseInsensitiveCompare:@"Don't Save"] == NSOrderedSame) {
+                            cancelBtn = btn; break;
+                        }
+                    } @catch (NSException *e) {}
+                }
+                if (cancelBtn) {
+                    [cancelBtn performClick:nil];
+                    result = @{@"status": @"ok", @"action": @"cancel", @"clicked": [cancelBtn title]};
+                } else {
+                    [dialogWindow performClose:nil];
+                    result = @{@"status": @"ok", @"action": @"close"};
+                }
+            } else {
+                NSButton *targetBtn = nil;
+                for (NSButton *btn in allButtons) {
+                    @try {
+                        if ([[btn keyEquivalent] isEqualToString:@"\r"] && [btn isEnabled]) {
+                            targetBtn = btn; break;
+                        }
+                    } @catch (NSException *e) {}
+                }
+                if (!targetBtn) {
+                    for (NSButton *btn in allButtons) {
+                        @try {
+                            NSString *title = [btn title] ?: @"";
+                            if (([title caseInsensitiveCompare:@"OK"] == NSOrderedSame ||
+                                 [title caseInsensitiveCompare:@"Done"] == NSOrderedSame ||
+                                 [title caseInsensitiveCompare:@"Share"] == NSOrderedSame) &&
+                                [btn isEnabled]) {
+                                targetBtn = btn; break;
+                            }
+                        } @catch (NSException *e) {}
+                    }
+                }
+                if (targetBtn) {
+                    [targetBtn performClick:nil];
+                    result = @{@"status": @"ok", @"action": action, @"clicked": [targetBtn title]};
+                } else {
+                    result = @{@"error": @"No default/OK button found"};
+                }
+            }
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"Dismiss failed"};
+}
+
 #pragma mark - Request Dispatcher
 
 static NSDictionary *FCPBridge_handleRequest(NSDictionary *request) {
@@ -3177,12 +6450,18 @@ static NSDictionary *FCPBridge_handleRequest(NSDictionary *request) {
         result = FCPBridge_handleTimelineGetState(params);
     } else if ([method isEqualToString:@"timeline.getDetailedState"]) {
         result = FCPBridge_handleTimelineGetDetailedState(params);
+    } else if ([method isEqualToString:@"timeline.setRange"]) {
+        result = FCPBridge_handleSetRange(params);
+    } else if ([method isEqualToString:@"timeline.batchExport"]) {
+        result = FCPBridge_handleBatchExport(params);
     }
     // playback.* namespace
     else if ([method isEqualToString:@"playback.action"]) {
         result = FCPBridge_handlePlayback(params);
     } else if ([method isEqualToString:@"playback.seekToTime"]) {
         result = FCPBridge_handlePlaybackSeek(params);
+    } else if ([method isEqualToString:@"playback.getPosition"]) {
+        result = FCPBridge_handlePlaybackGetPosition(params);
     }
     // fcpxml.* namespace
     else if ([method isEqualToString:@"fcpxml.import"]) {
@@ -3247,6 +6526,76 @@ static NSDictionary *FCPBridge_handleRequest(NSDictionary *request) {
         result = FCPBridge_handleCommandExecute(params);
     } else if ([method isEqualToString:@"command.ai"]) {
         result = FCPBridge_handleCommandAI(params);
+    }
+    // browser.* namespace
+    else if ([method isEqualToString:@"browser.listClips"]) {
+        result = FCPBridge_handleBrowserListClips(params);
+    } else if ([method isEqualToString:@"browser.appendClip"]) {
+        result = FCPBridge_handleBrowserAppendClip(params);
+    }
+    // menu.* namespace
+    else if ([method isEqualToString:@"menu.execute"]) {
+        result = FCPBridge_handleMenuExecute(params);
+    } else if ([method isEqualToString:@"menu.list"]) {
+        result = FCPBridge_handleMenuList(params);
+    }
+    // inspector.* namespace
+    else if ([method isEqualToString:@"inspector.get"]) {
+        result = FCPBridge_handleInspectorGet(params);
+    } else if ([method isEqualToString:@"inspector.set"]) {
+        result = FCPBridge_handleInspectorSet(params);
+    }
+    // view.* namespace
+    else if ([method isEqualToString:@"view.toggle"]) {
+        result = FCPBridge_handleViewToggle(params);
+    } else if ([method isEqualToString:@"view.workspace"]) {
+        result = FCPBridge_handleWorkspace(params);
+    }
+    // roles.* namespace
+    else if ([method isEqualToString:@"roles.assign"]) {
+        result = FCPBridge_handleRolesAssign(params);
+    }
+    // share.* namespace
+    else if ([method isEqualToString:@"share.export"]) {
+        result = FCPBridge_handleShareExport(params);
+    }
+    // project.* namespace
+    else if ([method isEqualToString:@"project.create"]) {
+        result = FCPBridge_handleProjectCreate(params);
+    } else if ([method isEqualToString:@"project.createEvent"]) {
+        result = FCPBridge_handleEventCreate(params);
+    } else if ([method isEqualToString:@"project.createLibrary"]) {
+        result = FCPBridge_handleLibraryCreate(params);
+    }
+    // tool.* namespace
+    else if ([method isEqualToString:@"tool.select"]) {
+        result = FCPBridge_handleToolSelect(params);
+    }
+    // dialog.* namespace
+    else if ([method isEqualToString:@"dialog.detect"]) {
+        result = FCPBridge_handleDialogDetect(params);
+    } else if ([method isEqualToString:@"dialog.click"]) {
+        result = FCPBridge_handleDialogClick(params);
+    } else if ([method isEqualToString:@"dialog.fill"]) {
+        result = FCPBridge_handleDialogFill(params);
+    } else if ([method isEqualToString:@"dialog.checkbox"]) {
+        result = FCPBridge_handleDialogCheckbox(params);
+    } else if ([method isEqualToString:@"dialog.popup"]) {
+        result = FCPBridge_handleDialogPopup(params);
+    } else if ([method isEqualToString:@"dialog.dismiss"]) {
+        result = FCPBridge_handleDialogDismiss(params);
+    }
+    // viewer.* namespace
+    else if ([method isEqualToString:@"viewer.getZoom"]) {
+        result = FCPBridge_handleViewerGetZoom(params);
+    } else if ([method isEqualToString:@"viewer.setZoom"]) {
+        result = FCPBridge_handleViewerSetZoom(params);
+    }
+    // options.* namespace
+    else if ([method isEqualToString:@"options.get"]) {
+        result = FCPBridge_handleOptionsGet(params);
+    } else if ([method isEqualToString:@"options.set"]) {
+        result = FCPBridge_handleOptionsSet(params);
     }
     else {
         return @{@"error": @{@"code": @(-32601), @"message":

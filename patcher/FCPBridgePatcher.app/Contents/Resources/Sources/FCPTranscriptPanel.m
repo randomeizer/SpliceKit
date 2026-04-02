@@ -1836,7 +1836,7 @@ static double CMTimeToSeconds(FCPTranscript_CMTime t) {
             });
         }];
         if (!buildOK) {
-            [self setErrorState:@"Failed to build Parakeet transcriber. Check tools/parakeet-transcriber/."];
+            [self setErrorState:@"Failed to build Parakeet transcriber. Re-run the patcher, or check Xcode Command Line Tools and ~/Library/Caches/FCPBridge/tools/parakeet-transcriber/."];
             return;
         }
         binaryPath = [self parakeetTranscriberPath];

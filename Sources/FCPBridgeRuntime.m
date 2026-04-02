@@ -35,7 +35,17 @@ void FCPBridge_executeOnMainThread(dispatch_block_t block) {
     if ([NSThread isMainThread]) {
         block();
     } else {
-        dispatch_sync(dispatch_get_main_queue(), block);
+        // Use CFRunLoopPerformBlock with kCFRunLoopCommonModes so it works
+        // even when FCP is running a modal event loop (sheets, dialogs).
+        // dispatch_sync deadlocks in that situation because the main queue
+        // isn't drained during modal sessions.
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+            block();
+            dispatch_semaphore_signal(sem);
+        });
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
     }
 }
 

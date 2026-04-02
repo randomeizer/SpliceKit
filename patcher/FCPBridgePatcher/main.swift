@@ -290,14 +290,23 @@ class PatcherModel: ObservableObject {
         let parakeetBin = buildDir + "/parakeet-transcriber"
         if FileManager.default.fileExists(atPath: parakeetSrcDir + "/Package.swift") {
             await logAsync("Building Parakeet transcriber (may take a moment on first run)...")
-            // Copy source to a writable location if it's inside a read-only app bundle
+            // Always stage the package in a persistent cache location so the runtime
+            // can rebuild it later if the deployed binary is missing.
+            let parakeetCacheDir = NSHomeDirectory() + "/Library/Caches/FCPBridge/tools/parakeet-transcriber"
+            let sourcePath = URL(fileURLWithPath: parakeetSrcDir).standardizedFileURL.path
+            let cachePath = URL(fileURLWithPath: parakeetCacheDir).standardizedFileURL.path
             let parakeetPkgDir: String
-            if !FileManager.default.isWritableFile(atPath: parakeetSrcDir) {
-                let tmpPkgDir = NSTemporaryDirectory() + "parakeet-transcriber"
-                shell("rm -rf '\(tmpPkgDir)' && cp -R '\(parakeetSrcDir)' '\(tmpPkgDir)'")
-                parakeetPkgDir = tmpPkgDir
-            } else {
+            if sourcePath == cachePath {
                 parakeetPkgDir = parakeetSrcDir
+            } else {
+                await logAsync("Caching Parakeet transcriber sources...")
+                shell("""
+                    rm -rf '\(parakeetCacheDir)' && \
+                    mkdir -p '\((parakeetCacheDir as NSString).deletingLastPathComponent)' && \
+                    ditto '\(parakeetSrcDir)' '\(parakeetCacheDir)' && \
+                    rm -rf '\(parakeetCacheDir)/.build' '\(parakeetCacheDir)/.swiftpm' 2>&1
+                    """)
+                parakeetPkgDir = parakeetCacheDir
             }
             let parakeetResult = shell("cd '\(parakeetPkgDir)' && swift build -c release 2>&1")
             let parakeetBuilt = parakeetPkgDir + "/.build/release/parakeet-transcriber"
@@ -382,6 +391,20 @@ class PatcherModel: ObservableObject {
 
         // Step 6: Re-sign
         await setStepAsync(.signApp)
+
+        // Check for a Developer ID signing identity. Using a stable certificate
+        // means TCC (privacy permissions) persist across re-patches, since macOS
+        // matches on the certificate rather than the ad-hoc CDHash.
+        let devIdResult = shell("security find-identity -v -p codesigning 2>/dev/null | grep 'Developer ID Application' | head -1")
+        let signIdentity: String
+        if let range = devIdResult.range(of: #""Developer ID Application: [^"]+""#, options: .regularExpression) {
+            signIdentity = String(devIdResult[range])
+            await logAsync("Signing with \(signIdentity)")
+        } else {
+            signIdentity = "-"
+            await logAsync("No Developer ID found, using ad-hoc signature")
+        }
+
         await logAsync("Signing frameworks and plugins...")
         let entitlements = buildDir + "/entitlements.plist"
         let entPlist = """
@@ -398,14 +421,14 @@ class PatcherModel: ObservableObject {
         shell("/usr/libexec/PlistBuddy -c \"Add :NSSpeechRecognitionUsageDescription string 'FCPBridge uses speech recognition to transcribe timeline audio for text-based editing.'\" '\(moddedApp)/Contents/Info.plist' 2>/dev/null")
 
         shell("""
-            for fw in '\(moddedApp)'/Contents/Frameworks/*.framework; do codesign --force --sign - "$fw" 2>/dev/null; done
-            find '\(moddedApp)/Contents/PlugIns' \\( -name '*.bundle' -o -name '*.appex' -o -name '*.pluginkit' -o -name '*.fxp' \\) -type d | while read p; do codesign --force --sign - "$p" 2>/dev/null; done
-            codesign --force --sign - '\(moddedApp)/Contents/Helpers/RegisterProExtension.app' 2>/dev/null
-            find '\(moddedApp)' -name '*.fxp' -type d | while read fxp; do codesign --force --sign - "$fxp" 2>/dev/null; done
-            codesign --force --sign - '\(moddedApp)/Contents/PlugIns/InternalFiltersXPC.pluginkit' 2>/dev/null
-            codesign --force --sign - '\(moddedApp)/Contents/Frameworks/Flexo.framework' 2>/dev/null
-            codesign --force --sign - '\(moddedApp)/Contents/Frameworks/FCPBridge.framework' 2>/dev/null
-            codesign --force --sign - --entitlements '\(entitlements)' '\(moddedApp)' 2>/dev/null
+            for fw in '\(moddedApp)'/Contents/Frameworks/*.framework; do codesign --force --sign \(signIdentity) "$fw" 2>/dev/null; done
+            find '\(moddedApp)/Contents/PlugIns' \\( -name '*.bundle' -o -name '*.appex' -o -name '*.pluginkit' -o -name '*.fxp' \\) -type d | while read p; do codesign --force --sign \(signIdentity) "$p" 2>/dev/null; done
+            codesign --force --sign \(signIdentity) '\(moddedApp)/Contents/Helpers/RegisterProExtension.app' 2>/dev/null
+            find '\(moddedApp)' -name '*.fxp' -type d | while read fxp; do codesign --force --sign \(signIdentity) "$fxp" 2>/dev/null; done
+            codesign --force --sign \(signIdentity) '\(moddedApp)/Contents/PlugIns/InternalFiltersXPC.pluginkit' 2>/dev/null
+            codesign --force --sign \(signIdentity) '\(moddedApp)/Contents/Frameworks/Flexo.framework' 2>/dev/null
+            codesign --force --sign \(signIdentity) '\(moddedApp)/Contents/Frameworks/FCPBridge.framework' 2>/dev/null
+            codesign --force --sign \(signIdentity) --entitlements '\(entitlements)' '\(moddedApp)' 2>/dev/null
             """)
 
         let verify = shell("codesign --verify --verbose '\(moddedApp)' 2>&1")
@@ -413,6 +436,14 @@ class PatcherModel: ObservableObject {
             await logAsync("Signature verified")
         } else {
             throw PatchError.msg("Signing failed: \(verify)")
+        }
+
+        // For ad-hoc signing, reset TCC so macOS re-captures the new CDHash on
+        // next launch. With a Developer ID cert this isn't needed since TCC
+        // matches on the certificate, not the hash.
+        if signIdentity == "-" {
+            shell("tccutil reset All com.apple.FinalCut 2>/dev/null")
+            await logAsync("Reset permissions for new signature")
         }
         await completeStepAsync(.signApp)
 

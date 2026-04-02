@@ -174,23 +174,71 @@ def timeline_action(action: str) -> str:
 
     Actions:
       Blade: blade, bladeAll
-      Markers: addMarker, addTodoMarker, addChapterMarker, deleteMarker, nextMarker, previousMarker
+      Markers: addMarker, addTodoMarker, addChapterMarker, deleteMarker, nextMarker,
+               previousMarker, deleteMarkersInSelection
       Transitions: addTransition
       Navigation: nextEdit, previousEdit, selectClipAtPlayhead, selectToPlayhead
       Selection: selectAll, deselectAll
-      Edit: delete, cut, copy, paste, undo, redo
-      Insert: insertGap
-      Trim: trimToPlayhead
+      Edit: delete, cut, copy, paste, undo, redo, pasteAsConnected, replaceWithGap,
+            pasteEffects, pasteAttributes, removeAttributes, copyAttributes, copyTimecode
+      Edit Modes: connectToPrimaryStoryline, insertEdit, appendEdit, overwriteEdit
+      Insert: insertGap, insertPlaceholder, addAdjustmentClip
+      Trim: trimToPlayhead, extendEditToPlayhead, trimStart, trimEnd, joinClips,
+            nudgeLeft, nudgeRight, nudgeUp, nudgeDown
       Color: addColorBoard, addColorWheels, addColorCurves, addColorAdjustment,
-             addHueSaturation, addEnhanceLightAndColor
+             addHueSaturation, addEnhanceLightAndColor, balanceColor, matchColor,
+             addMagneticMask, smartConform
       Volume: adjustVolumeUp, adjustVolumeDown
+      Audio: expandAudio, expandAudioComponents, addChannelEQ, enhanceAudio,
+             matchAudio, detachAudio
       Titles: addBasicTitle, addBasicLowerThird
-      Speed: retimeNormal, retimeFast2x, retimeFast4x, retimeFast8x, retimeFast20x,
-             retimeSlow50, retimeSlow25, retimeSlow10, retimeReverse, retimeHold,
-             freezeFrame, retimeBladeSpeed
+      Speed: retimeNormal, retimeFast2x/4x/8x/20x, retimeSlow50/25/10,
+             retimeReverse, retimeHold, freezeFrame, retimeBladeSpeed,
+             retimeSpeedRampToZero, retimeSpeedRampFromZero
       Keyframes: addKeyframe, deleteKeyframes, nextKeyframe, previousKeyframe
-      Other: solo, disable, createCompoundClip, autoReframe, exportXML,
-             shareSelection, addVideoGenerator
+      Rating: favorite, reject, unrate
+      Range: setRangeStart, setRangeEnd, clearRange, setClipRange
+      Clip Ops: solo, disable, createCompoundClip, autoReframe, detachAudio,
+                breakApartClipItems, removeEffects, synchronizeClips, openClip,
+                renameClip, addToSoloedClips, referenceNewParentClip, changeDuration
+      Storyline: createStoryline, liftFromPrimaryStoryline,
+                 overwriteToPrimaryStoryline, collapseToConnectedStoryline
+      Audition: createAudition, finalizeAudition, nextAuditionPick, previousAuditionPick
+      Captions: addCaption, splitCaption, resolveOverlaps
+      Multicam: createMulticamClip
+      Show/Hide: showVideoAnimation, showAudioAnimation, soloAnimation,
+                 showTrackingEditor, showCinematicEditor, showMagneticMaskEditor,
+                 enableBeatDetection, showPrecisionEditor, showAudioLanes,
+                 expandSubroles, showDuplicateRanges, showKeywordEditor,
+                 togglePrecisionEditor, toggleSelectedEffectsOff, toggleDuplicateDetection
+      Edit Modes AV: insertEditAudio, insertEditVideo, appendEditAudio, appendEditVideo,
+                     overwriteEditAudio, overwriteEditVideo, connectEditAudio,
+                     connectEditVideo, connectEditBacktimed, avEditModeAudio,
+                     avEditModeVideo, avEditModeBoth
+      Replace: replaceFromStart, replaceFromEnd, replaceWhole
+      Speed Extra: retimeCustomSpeed, retimeInstantReplayHalf, retimeInstantReplayQuarter,
+                   retimeReset, retimeOpticalFlow, retimeFrameBlending, retimeFloorFrame
+      Keywords: addKeywordGroup1..7
+      Color Nav: nextColorEffect, previousColorEffect, resetColorBoard, toggleAllColorOff
+      Audio Extra: alignAudioToVideo, volumeMute, addDefaultAudioEffect,
+                   addDefaultVideoEffect, applyAudioFades
+      Clip Extra: makeClipsUnique, enableDisable, transcodeMedia, pasteAllAttributes
+      Navigate: goToInspector, goToTimeline, goToViewer, goToColorBoard,
+                selectNextItem, selectUpperItem
+      View: zoomToFit, zoomIn, zoomOut, verticalZoomToFit, zoomToSamples,
+            toggleSnapping, toggleSkimming, toggleClipSkimming, toggleAudioSkimming,
+            toggleInspector, toggleTimeline, toggleTimelineIndex, toggleInspectorHeight,
+            beatDetectionGrid, timelineScrolling, enterFullScreen,
+            timelineHistoryBack, timelineHistoryForward
+      Project: duplicateProject, snapshotProject, projectProperties
+      Library: closeLibrary, libraryProperties, consolidateEventMedia, mergeEvents,
+               deleteGeneratedFiles
+      Render: renderSelection, renderAll
+      Export: exportXML, shareSelection
+      Find: find, findAndReplaceTitle
+      Reveal: revealInBrowser, revealProjectInBrowser, revealInFinder, moveToTrash
+      Other: analyzeAndFix, backgroundTasks, recordVoiceover, editRoles,
+             hideClip, removeAllKeywords, removeAnalysisKeywords, addVideoGenerator
 
     You can also pass any raw ObjC selector name.
     """
@@ -1379,7 +1427,7 @@ def list_transitions(filter: str = "") -> str:
 
 
 @mcp.tool()
-def apply_transition(name: str = "", effectID: str = "") -> str:
+def apply_transition(name: str = "", effectID: str = "", freeze_extend: bool = False) -> str:
     """Apply a specific transition at the current edit point.
 
     You can specify the transition by display name or effectID.
@@ -1388,6 +1436,9 @@ def apply_transition(name: str = "", effectID: str = "") -> str:
     Args:
         name: Display name of the transition (e.g. "Cross Dissolve", "Flow")
         effectID: The effect ID (e.g. "FxPlug:4731E73A-...")
+        freeze_extend: If True, automatically extend clip edges with freeze frames
+            when there isn't enough media for the transition. This avoids the
+            "not enough extra media" dialog and prevents ripple trimming.
 
     The transition is applied at the selected edit point (between clips).
     Select an edit point first with timeline_action("nextEdit") or
@@ -1401,12 +1452,17 @@ def apply_transition(name: str = "", effectID: str = "") -> str:
         params["effectID"] = effectID
     if name:
         params["name"] = name
+    if freeze_extend:
+        params["freezeExtend"] = True
 
     r = bridge.call("transitions.apply", **params)
     if _err(r):
         return f"Error: {r.get('error', r)}"
 
-    return f"Applied transition: {r.get('transition', '?')} ({r.get('effectID', '')})"
+    msg = f"Applied transition: {r.get('transition', '?')} ({r.get('effectID', '')})"
+    if r.get("freezeExtended"):
+        msg += " (clip edges extended with freeze frames)"
+    return msg
 
 
 # ============================================================
@@ -1517,6 +1573,433 @@ def ai_command(query: str) -> str:
         results.append(f"{act_type}.{action_name}" + (f" x{repeat}" if repeat > 1 else "") + " -> ok")
 
     return f"AI executed {len(actions)} action(s):\n" + "\n".join(results)
+
+
+# ============================================================
+# Menu Execute (universal menu access)
+# ============================================================
+
+@mcp.tool()
+def execute_menu_command(menu_path: list[str]) -> str:
+    """Execute ANY FCP menu command by navigating the menu bar hierarchy.
+
+    Args:
+        menu_path: List of menu item names from top to bottom.
+                   e.g. ["File", "New", "Project"] or ["Edit", "Paste as Connected Clip"]
+
+    This gives you access to every single menu item in FCP, including items
+    that don't have dedicated FCPBridge actions. Menu items are matched
+    case-insensitively and trailing ellipsis (...) is ignored.
+    """
+    r = bridge.call("menu.execute", menuPath=menu_path)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def list_menus(menu: str = "", depth: int = 2) -> str:
+    """List FCP menu items to discover available commands.
+
+    Args:
+        menu: Optional top-level menu name (e.g. "File", "Edit", "Modify").
+              If empty, lists all top-level menus.
+        depth: How deep to recurse into submenus (default 2).
+
+    Returns structured list of menu items with shortcuts and enabled status.
+    """
+    params = {"depth": depth}
+    if menu:
+        params["menu"] = menu
+    r = bridge.call("menu.list", **params)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Inspector Properties (read/write clip properties)
+# ============================================================
+
+@mcp.tool()
+def get_inspector_properties(property: str = "all") -> str:
+    """Read properties of the selected clip from the inspector.
+
+    Args:
+        property: Which properties to read. Options:
+                  "all" - transform, compositing, audio, crop values
+                  "transform" - positionX/Y/Z, rotation, scaleX/Y, anchorX/Y
+                  "compositing" - opacity (0.0-1.0), blend mode handle
+                  "audio" - volume level (linear gain)
+                  "crop" - left, right, top, bottom crop values
+                  "info" - clip name, class, effect stack presence
+                  "channels" - ALL effect channels with handles for direct access
+
+    Returns actual numeric values from FCP's internal effect parameter channels.
+    Requires a clip to be selected first (use timeline_action("selectClipAtPlayhead")).
+    """
+    r = bridge.call("inspector.get", property=property)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def set_inspector_property(property: str, value: float | str | bool) -> str:
+    """Set a property on the selected clip's effect parameters.
+
+    Args:
+        property: Property name to set:
+                  "opacity" - 0.0 to 1.0 (0% to 100%)
+                  "positionX" - horizontal position in pixels (0 = center)
+                  "positionY" - vertical position in pixels (0 = center)
+                  "positionZ" - Z depth
+                  "rotation" - rotation in degrees
+                  "scaleX" - horizontal scale (100 = 100%)
+                  "scaleY" - vertical scale (100 = 100%)
+                  "anchorX" - anchor point X
+                  "anchorY" - anchor point Y
+                  "volume" - audio volume (linear gain, 1.0 = 0dB)
+                  "handle:<handle_id>" - set any channel directly by handle
+        value: New numeric value to set
+
+    Changes are undoable (Cmd+Z). Creates the transform effect if it doesn't exist yet.
+    Requires a clip to be selected first.
+    """
+    r = bridge.call("inspector.set", property=property, value=value)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# View/Panel Toggles
+# ============================================================
+
+@mcp.tool()
+def toggle_panel(panel: str) -> str:
+    """Show or hide a panel/viewer in the FCP interface.
+
+    Args:
+        panel: Panel to toggle. Options:
+               inspector, timeline, browser, eventViewer,
+               effectsBrowser, transitionsBrowser,
+               videoScopes, histogram, vectorscope, waveform, audioMeter,
+               keywordEditor, timelineIndex, precisionEditor, retimeEditor,
+               audioCurves, videoAnimation, audioAnimation,
+               multicamViewer, 360viewer, fullscreenViewer,
+               backgroundTasks, voiceover, comparisonViewer
+    """
+    r = bridge.call("view.toggle", panel=panel)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def set_workspace(workspace: str) -> str:
+    """Switch to a predefined workspace layout.
+
+    Args:
+        workspace: "default", "organize", "colorEffects", or "dualDisplays"
+    """
+    r = bridge.call("view.workspace", workspace=workspace)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Tool Selection
+# ============================================================
+
+@mcp.tool()
+def select_tool(tool: str) -> str:
+    """Switch to a specific editing tool.
+
+    Args:
+        tool: "select", "trim", "blade", "position", "hand", "zoom",
+              "range", "crop", "distort", "transform"
+    """
+    r = bridge.call("tool.select", tool=tool)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Roles Management
+# ============================================================
+
+@mcp.tool()
+def assign_role(type: str, role: str) -> str:
+    """Assign a role to the selected clip.
+
+    Args:
+        type: "audio", "video", or "caption"
+        role: Role name (e.g. "Dialogue", "Music", "Effects", "Titles", "Video")
+    """
+    r = bridge.call("roles.assign", type=type, role=role)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Share/Export
+# ============================================================
+
+@mcp.tool()
+def share_project(destination: str = "") -> str:
+    """Share/export the project using a specific or default destination.
+
+    Args:
+        destination: Share destination name (e.g. "Export File", "Apple Devices 1080p",
+                     "YouTube & Facebook"). Leave empty for default destination.
+                     Use list_menus(menu="File") to see available Share destinations.
+    """
+    params = {}
+    if destination:
+        params["destination"] = destination
+    r = bridge.call("share.export", **params)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Project/Library/Event Management
+# ============================================================
+
+@mcp.tool()
+def create_project() -> str:
+    """Open the New Project dialog in FCP."""
+    r = bridge.call("project.create")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def create_event() -> str:
+    """Create a new event in the current library."""
+    r = bridge.call("project.createEvent")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def create_library() -> str:
+    """Open the New Library dialog."""
+    r = bridge.call("project.createLibrary")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Playhead Position & Monitoring
+# ============================================================
+
+@mcp.tool()
+def get_playhead_position() -> str:
+    """Get the current playhead position, timeline duration, frame rate, and playing state.
+
+    Returns:
+        seconds: Current playhead position in seconds
+        duration: Total timeline duration
+        frameRate: Timeline frame rate (e.g. 23.976, 29.97, 59.94)
+        isPlaying: Whether playback is currently active
+
+    Use this to monitor playhead position during playback or to know
+    exact position before performing edits.
+    """
+    r = bridge.call("playback.getPosition")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Dialog Detection & Interaction
+# ============================================================
+
+@mcp.tool()
+def detect_dialog() -> str:
+    """Detect if any dialog, sheet, alert, or popup is currently showing in FCP.
+
+    Returns details about all visible dialogs including:
+    - Dialog type (modal, sheet, alert, panel, progress, share)
+    - Title and all text labels
+    - Available buttons with enabled/disabled status
+    - Text fields (editable) with current values
+    - Checkboxes with checked/unchecked state
+    - Popup menus with available options and current selection
+
+    Call this before/after any action that might trigger a dialog,
+    or to check if a dialog needs to be handled before proceeding.
+    """
+    r = bridge.call("dialog.detect")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def click_dialog_button(button: str = "", index: int = -1) -> str:
+    """Click a button in the currently showing dialog/sheet/alert.
+
+    Args:
+        button: Button title to click (case-insensitive, partial match).
+                e.g. "OK", "Cancel", "Share", "Don't Save", "Use Freeze Frames"
+        index: Button index (0-based) if title is ambiguous. Use -1 to use title.
+
+    Finds the active dialog (modal window, sheet, or alert panel) and clicks
+    the specified button. Use detect_dialog() first to see available buttons.
+    """
+    params = {}
+    if button:
+        params["button"] = button
+    if index >= 0:
+        params["index"] = index
+    r = bridge.call("dialog.click", **params)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def fill_dialog_field(value: str, index: int = 0) -> str:
+    """Fill a text field in the currently showing dialog.
+
+    Args:
+        value: Text to enter in the field
+        index: Field index (0-based) if there are multiple fields
+
+    Use detect_dialog() first to see available text fields and their indices.
+    """
+    r = bridge.call("dialog.fill", value=value, index=index)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def toggle_dialog_checkbox(checkbox: str, checked: bool = None) -> str:
+    """Toggle or set a checkbox in the currently showing dialog.
+
+    Args:
+        checkbox: Checkbox title (partial match, case-insensitive)
+        checked: True to check, False to uncheck, None to toggle
+
+    Use detect_dialog() first to see available checkboxes.
+    """
+    params = {"checkbox": checkbox}
+    if checked is not None:
+        params["checked"] = checked
+    r = bridge.call("dialog.checkbox", **params)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def select_dialog_popup(select: str, popup_index: int = 0) -> str:
+    """Select an item from a popup menu in the currently showing dialog.
+
+    Args:
+        select: Item title to select
+        popup_index: Which popup menu (0-based) if there are multiple
+
+    Use detect_dialog() first to see available popup menus and their options.
+    """
+    r = bridge.call("dialog.popup", select=select, popupIndex=popup_index)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def dismiss_dialog(action: str = "default") -> str:
+    """Dismiss the currently showing dialog.
+
+    Args:
+        action: How to dismiss:
+                "default" - click the default button (usually OK/Share/Done)
+                "cancel" - click Cancel or press Escape
+                "ok" - explicitly look for OK/Done/Share button
+
+    Automatically finds and clicks the appropriate button to dismiss
+    the dialog, sheet, or alert.
+    """
+    r = bridge.call("dialog.dismiss", action=action)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# Viewer Zoom
+# ============================================================
+
+@mcp.tool()
+def get_viewer_zoom() -> str:
+    """Get the current viewer zoom level.
+
+    Returns the zoom factor (0.0 = Fit, 1.0 = 100%, 2.0 = 200%, etc.),
+    the reported zoom percentage, and whether the viewer is in Fit mode.
+    """
+    r = bridge.call("viewer.getZoom")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def set_viewer_zoom(zoom: float) -> str:
+    """Set the viewer zoom level to any value.
+
+    Args:
+        zoom: Zoom factor. 0.0 = Fit to window, 0.5 = 50%, 1.0 = 100%,
+              1.5 = 150%, 2.0 = 200%, etc. Any float value is accepted
+              (not limited to FCP's preset percentages).
+    """
+    r = bridge.call("viewer.setZoom", zoom=zoom)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+# ============================================================
+# FCPBridge Options
+# ============================================================
+
+@mcp.tool()
+def get_bridge_options() -> str:
+    """Get the current FCPBridge option settings.
+
+    Returns the state of all configurable options (e.g. viewerPinchZoom).
+    """
+    r = bridge.call("options.get")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def set_bridge_option(option: str, enabled: bool) -> str:
+    """Toggle an FCPBridge option.
+
+    Args:
+        option: Option name. Currently supported:
+                "viewerPinchZoom" - enable/disable trackpad pinch-to-zoom on the viewer
+        enabled: True to enable, False to disable
+    """
+    r = bridge.call("options.set", option=option, enabled=enabled)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
 
 
 if __name__ == "__main__":

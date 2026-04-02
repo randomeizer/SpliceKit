@@ -60,22 +60,87 @@ FCP stores items in: `sequence -> primaryObject (FFAnchoredCollection) -> contai
 | Category | Actions |
 |----------|---------|
 | Blade | blade, bladeAll |
-| Markers | addMarker, addTodoMarker, addChapterMarker, deleteMarker, nextMarker, previousMarker |
+| Markers | addMarker, addTodoMarker, addChapterMarker, deleteMarker, nextMarker, previousMarker, deleteMarkersInSelection |
 | Transitions | addTransition |
 | Navigation | nextEdit, previousEdit, selectClipAtPlayhead, selectToPlayhead |
 | Selection | selectAll, deselectAll |
-| Edit | delete, cut, copy, paste, undo, redo |
-| Insert | insertGap |
-| Trim | trimToPlayhead |
-| Color | addColorBoard, addColorWheels, addColorCurves, addColorAdjustment, addHueSaturation, addEnhanceLightAndColor |
+| Edit | delete, cut, copy, paste, undo, redo, pasteAsConnected, replaceWithGap, copyTimecode |
+| Edit Modes | connectToPrimaryStoryline, insertEdit, appendEdit, overwriteEdit |
+| Effects | pasteEffects, pasteAttributes, removeAttributes, copyAttributes, removeEffects |
+| Insert | insertGap, insertPlaceholder, addAdjustmentClip |
+| Trim | trimToPlayhead, extendEditToPlayhead, trimStart, trimEnd, joinClips, nudgeLeft, nudgeRight, nudgeUp, nudgeDown |
+| Color | addColorBoard, addColorWheels, addColorCurves, addColorAdjustment, addHueSaturation, addEnhanceLightAndColor, balanceColor, matchColor, addMagneticMask, smartConform |
 | Volume | adjustVolumeUp, adjustVolumeDown |
+| Audio | expandAudio, expandAudioComponents, addChannelEQ, enhanceAudio, matchAudio, detachAudio |
 | Titles | addBasicTitle, addBasicLowerThird |
-| Speed | retimeNormal, retimeFast2x/4x/8x/20x, retimeSlow50/25/10, retimeReverse, retimeHold, freezeFrame, retimeBladeSpeed |
+| Speed | retimeNormal, retimeFast2x/4x/8x/20x, retimeSlow50/25/10, retimeReverse, retimeHold, freezeFrame, retimeBladeSpeed, retimeSpeedRampToZero, retimeSpeedRampFromZero |
 | Keyframes | addKeyframe, deleteKeyframes, nextKeyframe, previousKeyframe |
-| Other | solo, disable, createCompoundClip, autoReframe, exportXML, shareSelection |
+| Rating | favorite, reject, unrate |
+| Range | setRangeStart, setRangeEnd, clearRange, setClipRange |
+| Clip Ops | solo, disable, createCompoundClip, autoReframe, breakApartClipItems, synchronizeClips, openClip, renameClip, addToSoloedClips, referenceNewParentClip, changeDuration |
+| Storyline | createStoryline, liftFromPrimaryStoryline, overwriteToPrimaryStoryline, collapseToConnectedStoryline |
+| Audition | createAudition, finalizeAudition, nextAuditionPick, previousAuditionPick |
+| Captions | addCaption, splitCaption, resolveOverlaps |
+| Multicam | createMulticamClip |
+| Show/Hide | showVideoAnimation, showAudioAnimation, soloAnimation, showTrackingEditor, showCinematicEditor, showMagneticMaskEditor, enableBeatDetection, showPrecisionEditor, showAudioLanes, expandSubroles, showDuplicateRanges, showKeywordEditor |
+| View | zoomToFit, zoomIn, zoomOut, verticalZoomToFit, zoomToSamples, toggleSnapping, toggleSkimming, toggleClipSkimming, toggleAudioSkimming, toggleInspector, toggleTimeline, toggleTimelineIndex, toggleInspectorHeight, beatDetectionGrid, timelineScrolling, enterFullScreen, timelineHistoryBack, timelineHistoryForward |
+| Project | duplicateProject, snapshotProject, projectProperties |
+| Library | closeLibrary, libraryProperties, consolidateEventMedia, mergeEvents, deleteGeneratedFiles |
+| Render | renderSelection, renderAll |
+| Export | exportXML, shareSelection |
+| Find | find, findAndReplaceTitle |
+| Reveal | revealInBrowser, revealProjectInBrowser, revealInFinder, moveToTrash |
+| Keywords | showKeywordEditor, removeAllKeywords, removeAnalysisKeywords |
+| Other | analyzeAndFix, backgroundTasks, recordVoiceover, editRoles, hideClip, addVideoGenerator |
 
 ## Playback Actions
-playPause, goToStart, goToEnd, nextFrame, prevFrame, nextFrame10, prevFrame10
+playPause, goToStart, goToEnd, nextFrame, prevFrame, nextFrame10, prevFrame10, playAroundCurrent
+
+## New: Universal Menu Access
+```
+execute_menu_command(["File", "New", "Project"])     # any menu item
+execute_menu_command(["Modify", "Balance Color"])     # color correction
+execute_menu_command(["View", "Playback", "Loop"])    # toggle loop
+list_menus(menu="File")                               # discover menu items
+list_menus(menu="Modify", depth=3)                    # see nested submenus
+```
+
+## New: Inspector Properties
+```
+get_inspector_properties()                    # read all properties of selected clip
+get_inspector_properties("transform")         # just transform (position, rotation, scale)
+get_inspector_properties("compositing")       # opacity, blend mode
+set_inspector_property("opacity", 0.5)        # set opacity to 50%
+set_inspector_property("volume", -6.0)        # set audio volume
+set_inspector_property("positionX", 100.0)    # move clip position
+```
+
+## New: Panel/View Toggles
+```
+toggle_panel("videoScopes")          # show/hide video scopes
+toggle_panel("inspector")            # toggle inspector
+toggle_panel("effectsBrowser")       # effects browser
+set_workspace("colorEffects")        # switch workspace layout
+```
+
+## New: Tool Selection
+```
+select_tool("blade")     # switch to blade tool
+select_tool("trim")      # switch to trim tool
+select_tool("range")     # switch to range selection
+select_tool("transform") # switch to transform tool
+```
+
+## New: Roles & Export
+```
+assign_role("audio", "Dialogue")     # assign audio role
+assign_role("video", "Titles")       # assign video role
+share_project("Export File")         # export with specific destination
+share_project()                      # export with default destination
+create_project()                     # create new project
+create_event()                       # create new event
+create_library()                     # create new library
+```
 
 ## Common Workflows
 
@@ -228,6 +293,21 @@ Transitions are applied at the current edit point. Navigate to an edit point fir
 timeline_action("nextEdit")           # go to next edit point
 apply_transition(name="Flow")         # apply Flow transition there
 ```
+
+### Freeze Extend (not enough media handles)
+When clips don't have enough extra media beyond their edges for a transition, FCP normally
+shows a dialog offering to ripple trim. FCPBridge adds a third option: **"Use Freeze Frames"**.
+
+- **UI button**: Whenever the "not enough extra media" dialog appears (including manual use),
+  a "Use Freeze Frames" button is added. It extends clip edges with freeze frames and
+  re-applies the transition without shortening the project.
+- **API parameter**: Use `freeze_extend=True` to automatically extend with freeze frames:
+```
+apply_transition(name="Cross Dissolve", freeze_extend=True)  # auto freeze-extend if needed
+```
+
+This creates freeze frames at the outgoing clip's last frame and the incoming clip's first
+frame, providing the media handles needed for the transition overlap.
 
 ## Command Palette
 ```

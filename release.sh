@@ -37,9 +37,21 @@ echo "[1/12] Bumping version to ${VERSION}..."
 echo "[2/12] Building FCPBridge dylib..."
 make clean && make
 
-echo "[3/12] Embedding dylib and MCP server in patcher..."
+echo "[3/12] Syncing patcher resources and rebuilding patcher..."
 cp build/FCPBridge "${PATCHER_APP}/Contents/Resources/FCPBridge"
 cp mcp/server.py "${PATCHER_APP}/Contents/Resources/mcp/server.py"
+cp tools/silence-detector.swift "${PATCHER_APP}/Contents/Resources/tools/silence-detector.swift"
+rsync -a --delete Sources/ "${PATCHER_APP}/Contents/Resources/Sources/"
+rsync -a --delete \
+    --exclude '.build' \
+    --exclude '.swiftpm' \
+    tools/parakeet-transcriber/ "${PATCHER_APP}/Contents/Resources/tools/parakeet-transcriber/"
+xcrun swiftc -parse-as-library -O \
+    -target arm64-apple-macos14.0 \
+    -F "${PATCHER_APP}/Contents/Frameworks" \
+    -framework Sparkle \
+    -o "${PATCHER_APP}/Contents/MacOS/FCPBridgePatcher" \
+    patcher/FCPBridgePatcher/main.swift
 
 # ──────────────────────────────────────────────
 # SIGN
