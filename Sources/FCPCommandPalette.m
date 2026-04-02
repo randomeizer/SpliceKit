@@ -675,6 +675,7 @@ static NSString * const kAIRowID = @"FCPAIRow";
 
     // --- Options ---
     add(@"FCPBridge Options", @"bridgeOptions", @"bridge_options", FCPCommandCategoryOptions, @"Options", nil, @"Open FCPBridge options panel", @[@"settings", @"preferences", @"config"]);
+    add(@"Toggle Effect Drag as Adjustment Clip", @"toggleEffectDragAsAdjustmentClip", @"bridge_toggle", FCPCommandCategoryOptions, @"Options", nil, @"Enable/disable dragging an effect to empty timeline space to create an adjustment clip", @[@"effect drag", @"adjustment layer", @"drop effect", @"effect browser"]);
     add(@"Toggle Viewer Pinch-to-Zoom", @"toggleViewerPinchZoom", @"bridge_toggle", FCPCommandCategoryOptions, @"Options", nil, @"Enable/disable trackpad pinch-to-zoom on the viewer", @[@"trackpad", @"zoom", @"magnify", @"gesture"]);
 
     self.allCommands = [cmds copy];
@@ -1235,7 +1236,12 @@ static NSString * const kAIRowID = @"FCPAIRow";
         [self showBridgeOptionsPanel];
         result = @{@"action": action, @"status": @"ok"};
     } else if ([type isEqualToString:@"bridge_toggle"]) {
-        if ([action isEqualToString:@"toggleViewerPinchZoom"]) {
+        if ([action isEqualToString:@"toggleEffectDragAsAdjustmentClip"]) {
+            BOOL newState = !FCPBridge_isEffectDragAsAdjustmentClipEnabled();
+            FCPBridge_setEffectDragAsAdjustmentClipEnabled(newState);
+            result = @{@"action": action, @"status": @"ok",
+                       @"effectDragAsAdjustmentClip": @(newState)};
+        } else if ([action isEqualToString:@"toggleViewerPinchZoom"]) {
             BOOL newState = !FCPBridge_isViewerPinchZoomEnabled();
             FCPBridge_setViewerPinchZoomEnabled(newState);
             result = @{@"action": action, @"status": @"ok",
@@ -1768,14 +1774,35 @@ static NSString * const kAIRowID = @"FCPAIRow";
 
 - (void)showBridgeOptionsPanel {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSPanel *opts = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 380, 200)
+        NSPanel *opts = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 380, 290)
             styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
             backing:NSBackingStoreBuffered defer:NO];
         opts.title = @"FCPBridge Options";
         [opts center];
 
         NSView *v = opts.contentView;
-        CGFloat y = 155;
+        CGFloat y = 245;
+
+        // --- Effect Drag as Adjustment Clip ---
+        NSButton *effectDragCheck = [NSButton checkboxWithTitle:@"Effect Drag as Adjustment Clip"
+                                                         target:self
+                                                         action:@selector(_bridgeOptionEffectDragToggled:)];
+        effectDragCheck.frame = NSMakeRect(20, y, 340, 20);
+        effectDragCheck.state = FCPBridge_isEffectDragAsAdjustmentClipEnabled()
+            ? NSControlStateValueOn : NSControlStateValueOff;
+        objc_setAssociatedObject(effectDragCheck, "panel", opts, OBJC_ASSOCIATION_RETAIN);
+        [v addSubview:effectDragCheck];
+
+        y -= 22;
+        NSTextField *effectDragDesc = [NSTextField wrappingLabelWithString:
+            @"Allow dragging a video effect from the Effects Browser into empty space above a clip "
+            @"to create an adjustment clip with that effect applied."];
+        effectDragDesc.frame = NSMakeRect(38, y - 38, 320, 48);
+        effectDragDesc.font = [NSFont systemFontOfSize:11];
+        effectDragDesc.textColor = [NSColor secondaryLabelColor];
+        [v addSubview:effectDragDesc];
+
+        y -= 72;
 
         // --- Viewer Pinch-to-Zoom ---
         NSButton *pinchCheck = [NSButton checkboxWithTitle:@"Viewer Pinch-to-Zoom"
@@ -1809,6 +1836,11 @@ static NSString * const kAIRowID = @"FCPAIRow";
 - (void)_bridgeOptionPinchZoomToggled:(NSButton *)sender {
     BOOL enabled = (sender.state == NSControlStateValueOn);
     FCPBridge_setViewerPinchZoomEnabled(enabled);
+}
+
+- (void)_bridgeOptionEffectDragToggled:(NSButton *)sender {
+    BOOL enabled = (sender.state == NSControlStateValueOn);
+    FCPBridge_setEffectDragAsAdjustmentClipEnabled(enabled);
 }
 
 - (void)enterTransitionBrowseMode {

@@ -1979,7 +1979,8 @@ def set_viewer_zoom(zoom: float) -> str:
 def get_bridge_options() -> str:
     """Get the current FCPBridge option settings.
 
-    Returns the state of all configurable options (e.g. viewerPinchZoom).
+    Returns the state of all configurable options
+    (e.g. effectDragAsAdjustmentClip, viewerPinchZoom).
     """
     r = bridge.call("options.get")
     if _err(r):
@@ -1993,6 +1994,7 @@ def set_bridge_option(option: str, enabled: bool) -> str:
 
     Args:
         option: Option name. Currently supported:
+                "effectDragAsAdjustmentClip" - enable/disable dragging effects to empty timeline space to create adjustment clips
                 "viewerPinchZoom" - enable/disable trackpad pinch-to-zoom on the viewer
         enabled: True to enable, False to disable
     """
