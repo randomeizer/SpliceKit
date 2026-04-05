@@ -32,14 +32,18 @@ if [ -f "$REPO_DIR/tools/silence-detector.swift" ]; then
     cp "$REPO_DIR/tools/silence-detector.swift" "$APP_RESOURCES/tools/silence-detector.swift"
 fi
 
-# Copy parakeet-transcriber sources if available
+# Copy parakeet-transcriber: prefer pre-built binary, fall back to sources
+PARAKEET_BIN="$REPO_DIR/tools/parakeet-transcriber/.build/release/parakeet-transcriber"
 PARAKEET_SRC="$REPO_DIR/tools/parakeet-transcriber"
-if [ -d "$PARAKEET_SRC" ]; then
+if [ -f "$PARAKEET_BIN" ]; then
+    cp "$PARAKEET_BIN" "$APP_RESOURCES/tools/parakeet-transcriber"
+    echo "Bundled parakeet-transcriber binary (pre-built)"
+elif [ -d "$PARAKEET_SRC" ]; then
     mkdir -p "$APP_RESOURCES/tools/parakeet-transcriber"
     rsync -a --delete \
         --exclude '.build' --exclude '.swiftpm' \
         "$PARAKEET_SRC/" "$APP_RESOURCES/tools/parakeet-transcriber/"
-    echo "Bundled parakeet-transcriber sources"
+    echo "Bundled parakeet-transcriber sources (will build on first use)"
 fi
 
 echo "Resource bundling complete"

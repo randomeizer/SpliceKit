@@ -37,10 +37,19 @@ echo "[1/13] Bumping version to ${VERSION}..."
 sed -i '' "s/MARKETING_VERSION = \"[^\"]*\"/MARKETING_VERSION = \"${VERSION}\"/g" "${XCODE_PROJECT}/project.pbxproj"
 sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = 1/g" "${XCODE_PROJECT}/project.pbxproj"
 
-echo "[2/13] Building SpliceKit dylib..."
+echo "[2/14] Building SpliceKit dylib..."
 make clean && make
 
-echo "[3/13] Building SpliceKit app via Xcode..."
+echo "[3/14] Building parakeet-transcriber..."
+cd tools/parakeet-transcriber && swift build -c release 2>&1 | tail -3 && cd ../..
+PARAKEET_BIN="tools/parakeet-transcriber/.build/release/parakeet-transcriber"
+if [ -f "$PARAKEET_BIN" ]; then
+    echo "  Built: $(du -h "$PARAKEET_BIN" | cut -f1)"
+else
+    echo "  WARNING: parakeet-transcriber build failed — release will not include it"
+fi
+
+echo "[4/14] Building SpliceKit app via Xcode..."
 xcodebuild -project "${XCODE_PROJECT}" \
     -scheme SpliceKit \
     -configuration Release \
@@ -48,24 +57,25 @@ xcodebuild -project "${XCODE_PROJECT}" \
     ONLY_ACTIVE_ARCH=NO \
     clean build
 
-echo "[4/13] Syncing bundled resources into app..."
+echo "[5/14] Syncing bundled resources into app..."
 mkdir -p "${BUILT_APP}/Contents/Resources/Sources"
 mkdir -p "${BUILT_APP}/Contents/Resources/mcp"
-mkdir -p "${BUILT_APP}/Contents/Resources/tools/parakeet-transcriber"
+mkdir -p "${BUILT_APP}/Contents/Resources/tools"
 cp build/SpliceKit "${BUILT_APP}/Contents/Resources/SpliceKit"
+cp build/silence-detector "${BUILT_APP}/Contents/Resources/tools/silence-detector"
 cp mcp/server.py "${BUILT_APP}/Contents/Resources/mcp/server.py"
-cp tools/silence-detector.swift "${BUILT_APP}/Contents/Resources/tools/silence-detector.swift"
 rsync -a --delete Sources/ "${BUILT_APP}/Contents/Resources/Sources/"
-rsync -a --delete \
-    --exclude '.build' \
-    --exclude '.swiftpm' \
-    tools/parakeet-transcriber/ "${BUILT_APP}/Contents/Resources/tools/parakeet-transcriber/"
+# Bundle pre-built parakeet binary (no source build needed on user's machine)
+if [ -f "$PARAKEET_BIN" ]; then
+    cp "$PARAKEET_BIN" "${BUILT_APP}/Contents/Resources/tools/parakeet-transcriber"
+    echo "  Bundled parakeet-transcriber binary"
+fi
 
 # ──────────────────────────────────────────────
 # SIGN
 # ──────────────────────────────────────────────
 
-echo "[5/13] Signing embedded binaries..."
+echo "[6/14] Signing embedded binaries..."
 find "${BUILT_APP}/Contents/Resources" -type f | while read f; do
     if file -b "$f" 2>/dev/null | grep -q "Mach-O"; then
         codesign --force --options runtime --timestamp --sign "${SIGN_ID}" "$f"
@@ -73,7 +83,7 @@ find "${BUILT_APP}/Contents/Resources" -type f | while read f; do
     fi
 done
 
-echo "[6/13] Signing app bundle..."
+echo "[7/14] Signing app bundle..."
 codesign --force --deep --options runtime --timestamp --sign "${SIGN_ID}" "${BUILT_APP}"
 codesign --verify --deep --strict "${BUILT_APP}"
 echo "  Verification passed"
@@ -82,7 +92,7 @@ echo "  Verification passed"
 # CREATE DMG
 # ──────────────────────────────────────────────
 
-echo "[7/13] Creating DMG..."
+echo "[8/14] Creating DMG..."
 DMG_TEMP="${BUILD_DIR}/dmg_staging"
 rm -rf "${DMG_TEMP}" "${DMG_PATH}"
 mkdir -p "${DMG_TEMP}"
@@ -100,10 +110,10 @@ echo "  DMG: ${DMG_PATH} ($(du -h "${DMG_PATH}" | cut -f1))"
 # NOTARIZE
 # ──────────────────────────────────────────────
 
-echo "[8/13] Submitting DMG for notarization (this may take a few minutes)..."
+echo "[9/14] Submitting DMG for notarization (this may take a few minutes)..."
 xcrun notarytool submit "${DMG_PATH}" --keychain-profile "${KEYCHAIN_PROFILE}" --wait
 
-echo "[9/13] Stapling notarization ticket..."
+echo "[10/14] Stapling notarization ticket..."
 xcrun stapler staple "${DMG_PATH}"
 echo "  Stapled: ${DMG_PATH}"
 
@@ -111,7 +121,7 @@ echo "  Stapled: ${DMG_PATH}"
 # SPARKLE APPCAST
 # ──────────────────────────────────────────────
 
-echo "[10/13] Generating Sparkle EdDSA signature..."
+echo "[11/14] Generating Sparkle EdDSA signature..."
 if [ ! -f "${SPARKLE_SIGN}" ]; then
     echo "  Downloading Sparkle tools..."
     SPARKLE_URL=$(curl -s https://api.github.com/repos/sparkle-project/Sparkle/releases/latest | python3 -c "import sys,json; [print(a['browser_download_url']) for a in json.loads(sys.stdin.read())['assets'] if a['name'].endswith('.tar.xz')]")
@@ -123,7 +133,7 @@ FILE_SIZE=$(stat -f%z "${DMG_PATH}")
 PUB_DATE=$(date -u "+%a, %d %b %Y %H:%M:%S +0000")
 echo "  Signature: ${SPARKLE_SIG}"
 
-echo "[11/13] Updating appcast.xml..."
+echo "[12/14] Updating appcast.xml..."
 # Build the new item XML
 NEW_ITEM="    <item>
       <title>SpliceKit v${VERSION}</title>
@@ -163,12 +173,12 @@ print('  Appcast updated')
 # GIT + GITHUB RELEASE
 # ──────────────────────────────────────────────
 
-echo "[12/13] Committing and pushing..."
+echo "[13/14] Committing and pushing..."
 git add -A
 git commit -m "Release v${VERSION}: ${NOTES}"
 git push origin main
 
-echo "[13/13] Creating GitHub release..."
+echo "[14/14] Creating GitHub release..."
 gh release create "v${VERSION}" "${DMG_PATH}" \
     --title "v${VERSION}" \
     --notes "${NOTES}" \
