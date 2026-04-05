@@ -3961,6 +3961,12 @@ static NSDictionary *SpliceKit_handleTimelineGetState(NSDictionary *params) {
 }
 
 #pragma mark - Transcript Handlers
+//
+// These proxy calls to SpliceKitTranscriptPanel for text-based editing.
+// The transcript panel does the heavy lifting — transcribing audio, managing
+// word/silence data, and performing timeline edits when words are deleted/moved.
+// Most handlers just forward parameters and return the panel's result.
+//
 
 static NSDictionary *SpliceKit_handleTranscriptOpen(NSDictionary *params) {
     NSString *fileURL = params[@"fileURL"];
@@ -5542,6 +5548,7 @@ static NSDictionary *SpliceKit_handleOptionsGet(NSDictionary *params) {
         @"effectDragAsAdjustmentClip": @(SpliceKit_isEffectDragAsAdjustmentClipEnabled()),
         @"viewerPinchZoom": @(SpliceKit_isViewerPinchZoomEnabled()),
         @"videoOnlyKeepsAudioDisabled": @(SpliceKit_isVideoOnlyKeepsAudioDisabledEnabled()),
+        @"suppressAutoImport": @(SpliceKit_isSuppressAutoImportEnabled()),
     };
 }
 
@@ -5566,6 +5573,12 @@ static NSDictionary *SpliceKit_handleOptionsSet(NSDictionary *params) {
         SpliceKit_setVideoOnlyKeepsAudioDisabledEnabled([enabled boolValue]);
         return @{@"status": @"ok",
                  @"videoOnlyKeepsAudioDisabled": @(SpliceKit_isVideoOnlyKeepsAudioDisabledEnabled())};
+    } else if ([option isEqualToString:@"suppressAutoImport"]) {
+        NSNumber *enabled = params[@"enabled"];
+        if (!enabled) return @{@"error": @"'enabled' parameter required (true/false)"};
+        SpliceKit_setSuppressAutoImportEnabled([enabled boolValue]);
+        return @{@"status": @"ok",
+                 @"suppressAutoImport": @(SpliceKit_isSuppressAutoImportEnabled())};
     }
 
     return @{@"error": [NSString stringWithFormat:@"Unknown option: %@", option]};
@@ -8402,6 +8415,105 @@ void SpliceKit_installVideoOnlyKeepsAudioDisabled(void) {
 
     sVideoOnlyKeepsAudioInstalled = YES;
     SpliceKit_log(@"[VideoOnlyKeepsAudio] Swizzle installed");
+}
+
+#pragma mark - Suppress Auto Import on Device Connect
+
+// When a card, camera, or iOS device mounts while FCP is running, FCP auto-opens
+// the Import Media window. This feature suppresses that by swizzling the class
+// methods on PEImportOrganizerContainerModule that handle the mount notifications.
+//
+// We can't swizzle the +startObserving... class methods because they already ran
+// at FCP launch (long before our dylib was injected). So instead we swizzle the
+// handlers themselves — when enabled, they just log and return without opening
+// the import window.
+
+static NSString * const kSpliceKitSuppressAutoImport = @"SpliceKitSuppressAutoImport";
+static IMP sOrigVolumeDidMount = NULL;
+static IMP sOrigRadVolumeDidMount = NULL;
+static BOOL sSuppressAutoImportInstalled = NO;
+
+BOOL SpliceKit_isSuppressAutoImportEnabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kSpliceKitSuppressAutoImport];
+}
+
+void SpliceKit_setSuppressAutoImportEnabled(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kSpliceKitSuppressAutoImport];
+    if (enabled) {
+        SpliceKit_installSuppressAutoImport();
+    }
+    SpliceKit_log(@"[SuppressAutoImport] %@", enabled ? @"Enabled" : @"Disabled");
+}
+
+// Swizzled +[PEImportOrganizerContainerModule volumeDidMount:]
+// Handles SD cards, USB drives, and other NSWorkspace volume mount notifications.
+static void SpliceKit_swizzled_volumeDidMount(id self, SEL _cmd, id notification) {
+    if (SpliceKit_isSuppressAutoImportEnabled()) {
+        SpliceKit_log(@"[SuppressAutoImport] Blocked +volumeDidMount: (notification=%@)",
+                      [notification name] ?: @"<nil>");
+        return;
+    }
+    ((void (*)(id, SEL, id))sOrigVolumeDidMount)(self, _cmd, notification);
+}
+
+// Swizzled +[PEImportOrganizerContainerModule radVolumeDidMount:]
+// Handles iOS device / RAD volume mount notifications.
+static void SpliceKit_swizzled_radVolumeDidMount(id self, SEL _cmd, id notification) {
+    if (SpliceKit_isSuppressAutoImportEnabled()) {
+        SpliceKit_log(@"[SuppressAutoImport] Blocked +radVolumeDidMount: (notification=%@)",
+                      [notification name] ?: @"<nil>");
+        return;
+    }
+    ((void (*)(id, SEL, id))sOrigRadVolumeDidMount)(self, _cmd, notification);
+}
+
+void SpliceKit_installSuppressAutoImport(void) {
+    if (sSuppressAutoImportInstalled) return;
+
+    Class cls = objc_getClass("PEImportOrganizerContainerModule");
+    if (!cls) {
+        SpliceKit_log(@"[SuppressAutoImport] PEImportOrganizerContainerModule class not found");
+        return;
+    }
+
+    // These are class methods, not instance methods — use object_getClass to get
+    // the metaclass so class_getInstanceMethod finds them correctly.
+    Class metaCls = object_getClass((id)cls);
+    if (!metaCls) {
+        SpliceKit_log(@"[SuppressAutoImport] Failed to get metaclass");
+        return;
+    }
+
+    struct { SEL sel; IMP *origPtr; IMP newImp; } swizzles[] = {
+        { NSSelectorFromString(@"volumeDidMount:"),
+          &sOrigVolumeDidMount,
+          (IMP)SpliceKit_swizzled_volumeDidMount },
+        { NSSelectorFromString(@"radVolumeDidMount:"),
+          &sOrigRadVolumeDidMount,
+          (IMP)SpliceKit_swizzled_radVolumeDidMount },
+    };
+
+    BOOL anySwizzled = NO;
+    for (int i = 0; i < 2; i++) {
+        Method m = class_getInstanceMethod(metaCls, swizzles[i].sel);
+        if (m && !*swizzles[i].origPtr) {
+            *swizzles[i].origPtr = method_setImplementation(m, swizzles[i].newImp);
+            SpliceKit_log(@"[SuppressAutoImport] Swizzled +[PEImportOrganizerContainerModule %@]",
+                          NSStringFromSelector(swizzles[i].sel));
+            anySwizzled = YES;
+        } else if (!m) {
+            SpliceKit_log(@"[SuppressAutoImport] Method not found: +%@",
+                          NSStringFromSelector(swizzles[i].sel));
+        }
+    }
+
+    if (!anySwizzled) {
+        SpliceKit_log(@"[SuppressAutoImport] No methods were swizzled — will retry on next enable");
+        return;
+    }
+
+    sSuppressAutoImportInstalled = YES;
+    SpliceKit_log(@"[SuppressAutoImport] Swizzle installed");
 }
 
 #pragma mark - Transition Handlers

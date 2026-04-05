@@ -2108,7 +2108,8 @@ def get_bridge_options() -> str:
     """Get the current SpliceKit option settings.
 
     Returns the state of all configurable options
-    (e.g. effectDragAsAdjustmentClip, viewerPinchZoom, videoOnlyKeepsAudioDisabled).
+    (e.g. effectDragAsAdjustmentClip, viewerPinchZoom, videoOnlyKeepsAudioDisabled,
+    suppressAutoImport).
     """
     r = bridge.call("options.get")
     if _err(r):
@@ -2125,6 +2126,7 @@ def set_bridge_option(option: str, enabled: bool) -> str:
                 "effectDragAsAdjustmentClip" - enable/disable dragging effects to empty timeline space to create adjustment clips
                 "viewerPinchZoom" - enable/disable trackpad pinch-to-zoom on the viewer
                 "videoOnlyKeepsAudioDisabled" - when Video-Only AV edit mode adds clips, keep audio+video but with audio disabled in inspector
+                "suppressAutoImport" - stop FCP from auto-opening the Import Media window when a card, camera, or iOS device mounts
         enabled: True to enable, False to disable
     """
     r = bridge.call("options.set", option=option, enabled=enabled)
