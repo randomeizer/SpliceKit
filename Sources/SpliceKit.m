@@ -166,6 +166,7 @@ static void SpliceKit_checkCompatibility(void) {
 - (void)toggleEffectDragAsAdjustmentClip:(id)sender;
 - (void)toggleViewerPinchZoom:(id)sender;
 - (void)toggleVideoOnlyKeepsAudioDisabled:(id)sender;
+- (void)toggleSuppressAutoImport:(id)sender;
 @property (nonatomic, weak) NSButton *toolbarButton;
 @property (nonatomic, weak) NSButton *paletteToolbarButton;
 @end
@@ -220,6 +221,14 @@ static void SpliceKit_checkCompatibility(void) {
 - (void)toggleVideoOnlyKeepsAudioDisabled:(id)sender {
     BOOL newState = !SpliceKit_isVideoOnlyKeepsAudioDisabledEnabled();
     SpliceKit_setVideoOnlyKeepsAudioDisabledEnabled(newState);
+    if ([sender isKindOfClass:[NSMenuItem class]]) {
+        [(NSMenuItem *)sender setState:newState ? NSControlStateValueOn : NSControlStateValueOff];
+    }
+}
+
+- (void)toggleSuppressAutoImport:(id)sender {
+    BOOL newState = !SpliceKit_isSuppressAutoImportEnabled();
+    SpliceKit_setSuppressAutoImportEnabled(newState);
     if ([sender isKindOfClass:[NSMenuItem class]]) {
         [(NSMenuItem *)sender setState:newState ? NSControlStateValueOn : NSControlStateValueOff];
     }
@@ -297,6 +306,15 @@ static void SpliceKit_installMenu(void) {
     videoOnlyKeepsAudioItem.state = SpliceKit_isVideoOnlyKeepsAudioDisabledEnabled()
         ? NSControlStateValueOn : NSControlStateValueOff;
     [optionsMenu addItem:videoOnlyKeepsAudioItem];
+
+    NSMenuItem *suppressAutoImportItem = [[NSMenuItem alloc]
+        initWithTitle:@"Suppress Auto Import Window on Device Connect"
+               action:@selector(toggleSuppressAutoImport:)
+        keyEquivalent:@""];
+    suppressAutoImportItem.target = [SpliceKitMenuController shared];
+    suppressAutoImportItem.state = SpliceKit_isSuppressAutoImportEnabled()
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    [optionsMenu addItem:suppressAutoImportItem];
 
     NSMenuItem *optionsMenuItem = [[NSMenuItem alloc] initWithTitle:@"Options" action:nil keyEquivalent:@""];
     optionsMenuItem.submenu = optionsMenu;
@@ -550,6 +568,13 @@ static void SpliceKit_appDidLaunch(void) {
     // Install video-only-keeps-audio-disabled swizzle if previously enabled
     if (SpliceKit_isVideoOnlyKeepsAudioDisabledEnabled()) {
         SpliceKit_installVideoOnlyKeepsAudioDisabled();
+    }
+
+    // Install suppress-auto-import swizzle if previously enabled. The mount-notification
+    // observers were already set up at FCP launch before our dylib loaded, so we have
+    // to intercept the handler methods themselves rather than the observer registration.
+    if (SpliceKit_isSuppressAutoImportEnabled()) {
+        SpliceKit_installSuppressAutoImport();
     }
 
     // Install effect browser favorites context menu (always on)

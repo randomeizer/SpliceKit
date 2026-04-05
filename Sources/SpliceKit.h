@@ -110,6 +110,13 @@ void SpliceKit_installVideoOnlyKeepsAudioDisabled(void);
 void SpliceKit_setVideoOnlyKeepsAudioDisabledEnabled(BOOL enabled);
 BOOL SpliceKit_isVideoOnlyKeepsAudioDisabledEnabled(void);
 
+// Stops FCP from auto-opening the Import Media window every time a card, camera,
+// or iOS device mounts. The observers stay wired up, but the handler methods
+// bail out early when this is enabled.
+void SpliceKit_installSuppressAutoImport(void);
+void SpliceKit_setSuppressAutoImportEnabled(BOOL enabled);
+BOOL SpliceKit_isSuppressAutoImportEnabled(void);
+
 #pragma mark - Cached Class References
 //
 // We look these up once at launch instead of calling objc_getClass() on every

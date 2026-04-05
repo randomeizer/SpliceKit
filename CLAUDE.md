@@ -399,6 +399,7 @@ get_bridge_options()                                # see all configurable optio
 set_bridge_option("effectDragAsAdjustmentClip", True)   # drag effects to create adjustment clips
 set_bridge_option("viewerPinchZoom", True)              # trackpad pinch-to-zoom on viewer
 set_bridge_option("videoOnlyKeepsAudioDisabled", True)  # keep audio disabled in video-only mode
+set_bridge_option("suppressAutoImport", True)           # stop auto-opening Import window on card/camera mount
 ```
 
 ## Object Handles
