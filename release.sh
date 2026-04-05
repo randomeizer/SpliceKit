@@ -17,7 +17,7 @@ if [ -z "$NOTES" ]; then
 fi
 
 SIGN_ID="Developer ID Application: Brian Tate (RH4U5VJHM6)"
-KEYCHAIN_PROFILE="SpliceKit"
+KEYCHAIN_PROFILE="FCPBridge"  # legacy name; change to "SpliceKit" after: xcrun notarytool store-credentials "SpliceKit"
 XCODE_PROJECT="patcher/SpliceKit.xcodeproj"
 BUILD_DIR="patcher/build"
 BUILT_APP="${BUILD_DIR}/Build/Products/Release/SpliceKit.app"
