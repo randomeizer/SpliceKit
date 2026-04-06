@@ -6089,14 +6089,14 @@ static void SpliceKit_captureTransitionReplayRequest(id sequence, id spineObject
     sFreezeExtendActionRootItem = rootItem;
     sFreezeExtendActionReportErrors = reportErrors;
 
-    SpliceKit_log([NSString stringWithFormat:
+    SpliceKit_log(
         @"[FreezeExtend] Captured transition request from %@ before=%@ after=%@ reportErrors=%@ effects=%@ root=%@",
         source ?: @"transition",
         before ? @"YES" : @"NO",
         after ? @"YES" : @"NO",
         reportErrors ? @"YES" : @"NO",
         NSStringFromClass([effects class]) ?: @"<nil>",
-        NSStringFromClass([rootItem class]) ?: @"<nil>"]);
+        NSStringFromClass([rootItem class]) ?: @"<nil>");
 }
 
 static void SpliceKit_captureOperationTransitionReplayRequest(
@@ -6122,14 +6122,14 @@ static void SpliceKit_captureOperationTransitionReplayRequest(
         durationSeconds = (double)transitionDuration.value / (double)transitionDuration.timescale;
     }
 
-    SpliceKit_log([NSString stringWithFormat:
+    SpliceKit_log(
         @"[FreezeExtend] Captured operation replay from %@ before=%@ after=%@ reportErrors=%d duration=%.4f spare=%@",
         source ?: @"transition",
         before ? @"YES" : @"NO",
         after ? @"YES" : @"NO",
         reportErrors,
         durationSeconds,
-        NSStringFromClass([spareTransition class]) ?: @"<nil>"]);
+        NSStringFromClass([spareTransition class]) ?: @"<nil>");
 }
 
 static void SpliceKit_clearCapturedTransitionRequest(void) {
@@ -6209,12 +6209,12 @@ static BOOL SpliceKit_replayCapturedTransitionRequest(id timeline, NSString **ou
             @"captured sequence no longer responds to actionAddTransitionsToSpineObjects");
     }
 
-    SpliceKit_log([NSString stringWithFormat:
+    SpliceKit_log(
         @"[FreezeExtend] Action replay using sequence=%@ spineObjects=%@ root=%@ liveRight=%@",
         NSStringFromClass([sequence class]) ?: @"<nil>",
         NSStringFromClass([spineObjects class]) ?: @"<nil>",
         NSStringFromClass([rootItem class]) ?: @"<nil>",
-        NSStringFromClass([liveRightClip class]) ?: @"<nil>"]);
+        NSStringFromClass([liveRightClip class]) ?: @"<nil>");
 
     id transitionsCreated = nil;
     __autoreleasing id error = nil;
@@ -6300,7 +6300,7 @@ static BOOL SpliceKit_replayCapturedOperationTransitionRequest(id timeline, NSSt
             @"captured sequence no longer responds to operationAddTransitions...askedRetry");
     }
 
-    SpliceKit_log([NSString stringWithFormat:
+    SpliceKit_log(@"%@", [NSString stringWithFormat:
         @"[FreezeExtend] Operation replay using sequence=%@ spineObject=%@ objects=%@ liveRight=%@ spare=%@",
         NSStringFromClass([sequence class]) ?: @"<nil>",
         NSStringFromClass([spineObject class]) ?: @"<nil>",
@@ -6400,7 +6400,7 @@ static double SpliceKit_defaultTransitionDurationSeconds(id timeline) {
 static BOOL SpliceKit_failFreezeExtendRepair(NSString **outReason, NSString *reason) {
     NSString *message = reason ?: @"unknown reason";
     if (outReason) *outReason = message;
-    SpliceKit_log([NSString stringWithFormat:
+    SpliceKit_log(@"%@", [NSString stringWithFormat:
         @"[FreezeExtend] Synthetic repair step failed: %@", message]);
     return NO;
 }
@@ -6475,7 +6475,7 @@ static BOOL SpliceKit_attemptFreezeExtendRepairRightSide(NSString **outReason) {
             }
         }
         sForceOverlap = YES;
-        SpliceKit_log([NSString stringWithFormat:
+        SpliceKit_log(@"%@", [NSString stringWithFormat:
             @"[FreezeExtend] Repair: reduced duration from %.4f to %.4f "
             @"(left=%.4f target=%.4f minClip=%.4f)",
             defaultDur, maxFeasible, leftDurForRepair, targetDuration, minClipDur]);
@@ -6498,7 +6498,7 @@ static BOOL SpliceKit_attemptFreezeExtendRepairRightSide(NSString **outReason) {
                 SpliceKit_log(@"[FreezeExtend] Captured operation replay returned success but no transition appeared");
             }
         } else {
-            SpliceKit_log([NSString stringWithFormat:
+            SpliceKit_log(@"%@", [NSString stringWithFormat:
                 @"[FreezeExtend] Captured operation replay failed: %@",
                 opReplayReason ?: @"unknown reason"]);
         }
@@ -6521,7 +6521,7 @@ static BOOL SpliceKit_attemptFreezeExtendRepairRightSide(NSString **outReason) {
                 SpliceKit_log(@"[FreezeExtend] Captured replay returned success but no transition appeared");
             }
         } else {
-            SpliceKit_log([NSString stringWithFormat:
+            SpliceKit_log(@"%@", [NSString stringWithFormat:
                 @"[FreezeExtend] Captured replay failed: %@",
                 replayReason ?: @"unknown reason"]);
         }
@@ -6570,7 +6570,7 @@ static BOOL SpliceKit_attemptFreezeExtendRepairRightSide(NSString **outReason) {
     }
 
     if (rightEnd <= targetEnd + (frame * 4.0)) {
-        SpliceKit_log([NSString stringWithFormat:
+        SpliceKit_log(@"%@", [NSString stringWithFormat:
             @"[FreezeExtend] Right clip already within captured bounds start=%.4f end=%.4f targetEnd=%.4f",
             rightStart, rightEnd, targetEnd]);
         repairResult = YES;
@@ -6587,7 +6587,7 @@ static BOOL SpliceKit_attemptFreezeExtendRepairRightSide(NSString **outReason) {
         double leftStart = 0.0;
         double leftEnd = 0.0;
         SpliceKit_transitionGetItemBounds(leftClip, &leftStart, &leftEnd);
-        SpliceKit_log([NSString stringWithFormat:
+        SpliceKit_log(@"%@", [NSString stringWithFormat:
             @"[FreezeExtend] Corrective trim left=%.4f-%.4f right=%.4f-%.4f targetCut=%.4f targetEnd=%.4f",
             leftStart, leftEnd, rightStart, rightEnd, targetStart, targetEnd]);
 
@@ -6620,7 +6620,7 @@ static BOOL SpliceKit_attemptFreezeExtendRepairRightSide(NSString **outReason) {
             goto repair_cleanup;
         }
 
-        SpliceKit_log([NSString stringWithFormat:
+        SpliceKit_log(@"%@", [NSString stringWithFormat:
             @"[FreezeExtend] Corrective trim completed right=%.4f-%.4f",
             correctedRightStart, correctedRightEnd]);
         SpliceKit_sendTimelineSimpleAction(timeline, @"deselectAll:");
@@ -6655,7 +6655,7 @@ static void SpliceKit_scheduleFreezeExtendRepairAttempt(NSInteger attemptNumber)
             BOOL ok = SpliceKit_attemptFreezeExtendRepairRightSide(&reason);
             if (ok) {
                 sFreezeExtendDidApply = YES;
-                SpliceKit_log([NSString stringWithFormat:
+                SpliceKit_log(@"%@", [NSString stringWithFormat:
                     @"[FreezeExtend] Synthetic repair completed on attempt %ld",
                     (long)attemptNumber]);
                 SpliceKit_clearCapturedTransitionRequest();
@@ -6668,7 +6668,7 @@ static void SpliceKit_scheduleFreezeExtendRepairAttempt(NSInteger attemptNumber)
             }
 
             sFreezeExtendDidApply = NO;
-            SpliceKit_log([NSString stringWithFormat:
+            SpliceKit_log(@"%@", [NSString stringWithFormat:
                 @"[FreezeExtend] Synthetic repair failed on attempt %ld: %@",
                 (long)attemptNumber, reason ?: @"unknown reason"]);
             SpliceKit_clearCapturedTransitionRequest();
@@ -6696,7 +6696,7 @@ static int SpliceKit_effectiveTransitionOverlapType(int overlapType, NSString *s
     if (overlapType != 2) {
         SpliceKit_log(@"[FreezeExtend] Forcing transitionOverlapType -> 2");
         if (source.length > 0) {
-            SpliceKit_log([NSString stringWithFormat:
+            SpliceKit_log(@"%@", [NSString stringWithFormat:
                 @"[FreezeExtend] Source=%@ original transitionOverlapType=%d",
                 source, overlapType]);
         }
@@ -6776,7 +6776,7 @@ static BOOL SpliceKit_swizzled_operationAddTransitionsAskedRetry(
 
 static void SpliceKit_swizzled_NSApp_stopModalWithCode(id self, SEL _cmd, NSModalResponse code) {
     if (sFreezeExtendInTransitionAlert) {
-        SpliceKit_log([NSString stringWithFormat:
+        SpliceKit_log(@"%@", [NSString stringWithFormat:
             @"[FreezeExtend] stopModalWithCode raw=%ld", (long)code]);
         if (SpliceKit_isFreezeFramesResponse(code)) {
             SpliceKit_log(@"[FreezeExtend] stopModalWithCode detected 'Use Freeze Frames'");
@@ -8550,9 +8550,8 @@ static IMP sOrigOverwriteConform = NULL;
 static IMP sOrigAnchorConform = NULL;
 static BOOL sDefaultConformInstalled = NO;
 
-// Cached selectors discovered at install time via runtime introspection
-static SEL sCachedConformEffectSel = NULL;   // on FFEffectStack
-static SEL sCachedSetConformTypeSel = NULL;  // on FFHeConformEffect
+// Cached selector for -[FFEffectStack conformEffect], discovered at install time.
+static SEL sCachedConformEffectSel = NULL;
 
 NSString *SpliceKit_getDefaultSpatialConformType(void) {
     NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:kSpliceKitDefaultSpatialConformType];
@@ -8576,66 +8575,33 @@ void SpliceKit_setDefaultSpatialConformType(NSString *value) {
     SpliceKit_log(@"[DefaultConform] Set to '%@'", value);
 }
 
-// Map string type to integer value used by FFHeConformEffect.
-// FCP internal values: 1 = Fit, 2 = Fill, 0 = None
-static NSInteger SpliceKit_conformTypeToInt(NSString *type) {
-    if ([type isEqualToString:@"fill"]) return 2;
-    if ([type isEqualToString:@"none"]) return 0;
-    return 1; // "fit" default
+// Map string type to CHChannelEnum integer value on FFHeConformEffect._chType.
+// The channel's strings array is ["Fit", "Fill", "None"], so: 0 = Fit, 1 = Fill, 2 = None.
+static int SpliceKit_conformTypeToInt(NSString *type) {
+    if ([type isEqualToString:@"fill"]) return 1;
+    if ([type isEqualToString:@"none"]) return 2;
+    return 0; // "fit" default
 }
 
-// Probe the ObjC runtime to find the selectors we need on FFEffectStack
-// and FFHeConformEffect. Returns YES if both were found.
+// Verify FFEffectStack has a conformEffect accessor. Returns YES if found.
 static BOOL SpliceKit_discoverConformSelectors(void) {
-    if (sCachedConformEffectSel && sCachedSetConformTypeSel) return YES;
+    if (sCachedConformEffectSel) return YES;
 
-    // --- Find the conform effect accessor on FFEffectStack ---
     Class stackClass = objc_getClass("FFEffectStack");
     if (!stackClass) {
         SpliceKit_log(@"[DefaultConform] FFEffectStack class not found");
         return NO;
     }
 
-    NSArray *conformCandidates = @[@"conformEffect", @"intrinsicConformEffect",
-                                    @"spatialConformEffect", @"heConformEffect"];
-    for (NSString *name in conformCandidates) {
-        SEL sel = NSSelectorFromString(name);
-        if (class_getInstanceMethod(stackClass, sel)) {
-            sCachedConformEffectSel = sel;
-            SpliceKit_log(@"[DefaultConform] Found conform effect selector: -[FFEffectStack %@]", name);
-            break;
-        }
-    }
-    if (!sCachedConformEffectSel) {
-        SpliceKit_log(@"[DefaultConform] Could not find conform effect selector on FFEffectStack. "
-                      @"Tried: %@", [conformCandidates componentsJoinedByString:@", "]);
-        return NO;
+    SEL sel = NSSelectorFromString(@"conformEffect");
+    if (class_getInstanceMethod(stackClass, sel)) {
+        sCachedConformEffectSel = sel;
+        SpliceKit_log(@"[DefaultConform] Found -[FFEffectStack conformEffect]");
+        return YES;
     }
 
-    // --- Find the type setter on FFHeConformEffect ---
-    Class conformClass = objc_getClass("FFHeConformEffect");
-    if (!conformClass) {
-        SpliceKit_log(@"[DefaultConform] FFHeConformEffect class not found");
-        return NO;
-    }
-
-    NSArray *typeCandidates = @[@"setConformType:", @"setType:", @"setSpatialConformType:",
-                                 @"setConformMode:"];
-    for (NSString *name in typeCandidates) {
-        SEL sel = NSSelectorFromString(name);
-        if (class_getInstanceMethod(conformClass, sel)) {
-            sCachedSetConformTypeSel = sel;
-            SpliceKit_log(@"[DefaultConform] Found type setter: -[FFHeConformEffect %@]", name);
-            break;
-        }
-    }
-    if (!sCachedSetConformTypeSel) {
-        SpliceKit_log(@"[DefaultConform] Could not find type setter on FFHeConformEffect. "
-                      @"Tried: %@", [typeCandidates componentsJoinedByString:@", "]);
-        return NO;
-    }
-
-    return YES;
+    SpliceKit_log(@"[DefaultConform] -[FFEffectStack conformEffect] not found");
+    return NO;
 }
 
 // Snapshot selected items from the timeline module
@@ -8656,18 +8622,21 @@ static NSSet *SpliceKit_conformPointerSet(NSArray *items) {
     return set;
 }
 
-// After an edit, find newly added clips and set their spatial conform type
+// After an edit, find newly added clips and set their spatial conform type.
+// The conform type lives on FFHeConformEffect._chType (a CHChannelEnum).
+// We access it via KVC and call -[CHChannelEnum setIntValue:].
 static void SpliceKit_conformSetNewClipType(id timelineModule, NSArray *selectedBefore) {
     NSString *conformType = SpliceKit_getDefaultSpatialConformType();
     if ([conformType isEqualToString:@"fit"]) return; // FCP default, nothing to do
-    if (!sCachedConformEffectSel || !sCachedSetConformTypeSel) return;
+    if (!sCachedConformEffectSel) return;
     if (!timelineModule) return;
 
     NSArray *selectedAfter = SpliceKit_conformGetSelectedItems(timelineModule);
     if (!selectedAfter.count) return;
 
     NSSet *beforeSet = SpliceKit_conformPointerSet(selectedBefore);
-    NSInteger conformInt = SpliceKit_conformTypeToInt(conformType);
+    int conformInt = SpliceKit_conformTypeToInt(conformType);
+    SEL setIntValueSel = NSSelectorFromString(@"setIntValue:");
 
     // Get the sequence for undo grouping
     id sequence = nil;
@@ -8689,21 +8658,30 @@ static void SpliceKit_conformSetNewClipType(id timelineModule, NSArray *selected
         if ([beforeSet containsObject:[NSValue valueWithNonretainedObject:clip]])
             continue; // Not a new clip
 
-        // Get the clip's effect stack
-        SEL esSel = NSSelectorFromString(@"effectStack");
-        if (![clip respondsToSelector:esSel]) continue;
-        id effectStack = ((id (*)(id, SEL))objc_msgSend)(clip, esSel);
-        if (!effectStack) continue;
+        @try {
+            // Get the clip's effect stack
+            SEL esSel = NSSelectorFromString(@"effectStack");
+            if (![clip respondsToSelector:esSel]) continue;
+            id effectStack = ((id (*)(id, SEL))objc_msgSend)(clip, esSel);
+            if (!effectStack) continue;
 
-        // Get the conform effect from the stack
-        if (![effectStack respondsToSelector:sCachedConformEffectSel]) continue;
-        id conformEffect = ((id (*)(id, SEL))objc_msgSend)(effectStack, sCachedConformEffectSel);
-        if (!conformEffect) continue;
+            // Get the conform effect from the stack
+            if (![effectStack respondsToSelector:sCachedConformEffectSel]) continue;
+            id conformEffect = ((id (*)(id, SEL))objc_msgSend)(effectStack, sCachedConformEffectSel);
+            if (!conformEffect) continue;
 
-        // Set the conform type
-        if ([conformEffect respondsToSelector:sCachedSetConformTypeSel]) {
-            ((void (*)(id, SEL, NSInteger))objc_msgSend)(conformEffect, sCachedSetConformTypeSel, conformInt);
-            modifiedCount++;
+            // Get the _chType channel (CHChannelEnum) via KVC
+            id chType = [conformEffect valueForKey:@"_chType"];
+            if (!chType) continue;
+
+            // Set the integer value on the channel
+            if ([chType respondsToSelector:setIntValueSel]) {
+                ((void (*)(id, SEL, int))objc_msgSend)(chType, setIntValueSel, conformInt);
+                modifiedCount++;
+            }
+        } @catch (NSException *e) {
+            SpliceKit_log(@"[DefaultConform] Exception on clip %@: %@",
+                          NSStringFromClass([clip class]), e.reason);
         }
     }
 
@@ -8769,7 +8747,7 @@ static void SpliceKit_swizzled_anchorConform(id self, SEL _cmd, id sender) {
 void SpliceKit_installDefaultSpatialConformType(void) {
     if (sDefaultConformInstalled) return;
 
-    // Discover FFHeConformEffect selectors at runtime
+    // Verify FFEffectStack.conformEffect exists at runtime
     if (!SpliceKit_discoverConformSelectors()) {
         SpliceKit_log(@"[DefaultConform] Selector discovery failed — feature unavailable");
         return;
