@@ -40,6 +40,11 @@ typedef NS_ENUM(NSInteger, SpliceKitCaptionStatus) {
     SpliceKitCaptionStatusError,
 };
 
+typedef NS_ENUM(NSInteger, SpliceKitCaptionOutputMode) {
+    SpliceKitCaptionOutputTitle = 0,          // Motion title clips (social media style)
+    SpliceKitCaptionOutputNativeCaption,       // FFAnchoredCaption objects (native caption lane)
+};
+
 typedef NS_ENUM(NSInteger, SpliceKitCaptionGrouping) {
     SpliceKitCaptionGroupingByWordCount = 0,
     SpliceKitCaptionGroupingBySentence,
@@ -138,8 +143,12 @@ extern NSNotificationName const SpliceKitCaptionDidGenerateNotification;
 @property (nonatomic) double maxSecondsPerSegment;       // default 3.0
 - (void)regroupSegments;
 
+// Output mode
+@property (nonatomic) SpliceKitCaptionOutputMode outputMode;
+
 // Generation & Export
 - (NSDictionary *)generateCaptions;
+- (NSDictionary *)generateNativeCaptions:(NSString *)language format:(NSString *)format;
 - (NSDictionary *)exportSRT:(NSString *)outputPath;
 - (NSDictionary *)exportTXT:(NSString *)outputPath;
 

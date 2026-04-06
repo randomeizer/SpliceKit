@@ -4473,6 +4473,143 @@ static NSDictionary *SpliceKit_handleCaptionsCleanup(NSDictionary *params) {
     return result ?: @{@"error": @"Cleanup failed"};
 }
 
+#pragma mark - Native Captions (FFAnchoredCaption)
+
+static NSDictionary *SpliceKit_handleNativeCaptionsGenerate(NSDictionary *params) {
+    SpliceKitCaptionPanel *panel = [SpliceKitCaptionPanel sharedPanel];
+
+    // Apply grouping mode if specified
+    NSString *grouping = params[@"grouping"] ?: @"word";
+    if ([grouping isEqualToString:@"word"]) {
+        panel.groupingMode = SpliceKitCaptionGroupingByWordCount;
+        panel.maxWordsPerSegment = 1;
+    } else if ([grouping isEqualToString:@"phrase"] || [grouping isEqualToString:@"sentence"]) {
+        panel.groupingMode = SpliceKitCaptionGroupingBySentence;
+    } else if ([grouping hasPrefix:@"group:"]) {
+        NSInteger n = [[grouping substringFromIndex:6] integerValue];
+        panel.groupingMode = SpliceKitCaptionGroupingByWordCount;
+        panel.maxWordsPerSegment = MAX(n, 1);
+    } else if ([grouping hasPrefix:@"time:"]) {
+        double s = [[grouping substringFromIndex:5] doubleValue];
+        panel.groupingMode = SpliceKitCaptionGroupingByTime;
+        panel.maxSecondsPerSegment = MAX(s, 0.1);
+    } else if ([grouping isEqualToString:@"social"]) {
+        panel.groupingMode = SpliceKitCaptionGroupingSocial;
+    } else {
+        // Default: word-by-word
+        panel.groupingMode = SpliceKitCaptionGroupingByWordCount;
+        panel.maxWordsPerSegment = 1;
+    }
+
+    // Also accept explicit maxWords / maxSeconds overrides
+    if (params[@"maxWords"]) {
+        panel.maxWordsPerSegment = MAX([params[@"maxWords"] unsignedIntegerValue], 1);
+    }
+    if (params[@"maxSeconds"]) {
+        panel.maxSecondsPerSegment = MAX([params[@"maxSeconds"] doubleValue], 0.1);
+    }
+
+    NSString *language = params[@"language"] ?: @"en";
+    NSString *format = params[@"format"] ?: @"ITT";
+
+    return [panel generateNativeCaptions:language format:format];
+}
+
+static NSDictionary *SpliceKit_handleNativeCaptionsVerify(NSDictionary *params) {
+    // Walk the caption lane in the active timeline and report caption objects
+    __block NSDictionary *result = nil;
+
+    SpliceKit_executeOnMainThread(^{
+        @try {
+            id timelineModule = SpliceKit_getActiveTimelineModule();
+            if (!timelineModule) {
+                result = @{@"error": @"No active timeline module"};
+                return;
+            }
+            id sequence = ((id (*)(id, SEL))objc_msgSend)(timelineModule,
+                NSSelectorFromString(@"sequence"));
+            if (!sequence) {
+                result = @{@"error": @"No sequence in timeline"};
+                return;
+            }
+
+            // Get all captions from the sequence
+            SEL captionsSel = NSSelectorFromString(@"captionsWithRoleUID:includingDisabled:");
+            NSMutableArray *captionInfos = [NSMutableArray array];
+
+            // Try to get caption objects — walk anchored items looking for FFAnchoredCaption
+            id primaryObject = ((id (*)(id, SEL))objc_msgSend)(sequence,
+                NSSelectorFromString(@"primaryObject"));
+            if (!primaryObject) {
+                result = @{@"error": @"No primary object"};
+                return;
+            }
+
+            // Get all anchored items (connected objects) from the primary object
+            SEL anchoredItemsSel = NSSelectorFromString(@"anchoredItems");
+            id anchoredItems = nil;
+            if ([primaryObject respondsToSelector:anchoredItemsSel]) {
+                anchoredItems = ((id (*)(id, SEL))objc_msgSend)(primaryObject, anchoredItemsSel);
+            }
+
+            // Also check containedItems for captions
+            SEL containedItemsSel = NSSelectorFromString(@"containedItems");
+            id containedItems = nil;
+            if ([primaryObject respondsToSelector:containedItemsSel]) {
+                containedItems = ((id (*)(id, SEL))objc_msgSend)(primaryObject, containedItemsSel);
+            }
+
+            Class captionClass = NSClassFromString(@"FFAnchoredCaption");
+            SEL textSel = NSSelectorFromString(@"text");
+            SEL displayNameSel = NSSelectorFromString(@"displayName");
+
+            // Helper block to process items
+            void (^processItems)(id) = ^(id items) {
+                if (!items) return;
+                NSArray *itemArray = nil;
+                if ([items isKindOfClass:[NSArray class]]) {
+                    itemArray = items;
+                } else if ([items isKindOfClass:[NSSet class]]) {
+                    itemArray = [(NSSet *)items allObjects];
+                } else {
+                    return;
+                }
+                for (id item in itemArray) {
+                    if (captionClass && [item isKindOfClass:captionClass]) {
+                        NSString *text = [item respondsToSelector:textSel]
+                            ? ((id (*)(id, SEL))objc_msgSend)(item, textSel) : nil;
+                        NSString *name = [item respondsToSelector:displayNameSel]
+                            ? ((id (*)(id, SEL))objc_msgSend)(item, displayNameSel) : nil;
+                        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+                        if (text) info[@"text"] = text;
+                        if (name) info[@"displayName"] = name;
+                        info[@"class"] = NSStringFromClass([item class]);
+                        [captionInfos addObject:info];
+                    }
+                    // Recurse into sub-containers
+                    if ([item respondsToSelector:anchoredItemsSel]) {
+                        id subItems = ((id (*)(id, SEL))objc_msgSend)(item, anchoredItemsSel);
+                        if (subItems) processItems(subItems);
+                    }
+                }
+            };
+
+            processItems(anchoredItems);
+            processItems(containedItems);
+
+            result = @{
+                @"status": @"ok",
+                @"captionCount": @(captionInfos.count),
+                @"captions": captionInfos,
+            };
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+
+    return result ?: @{@"error": @"Verification failed"};
+}
+
 #pragma mark - Scene Change Detection
 //
 // Detects visual cuts in timeline media by comparing histogram differences
@@ -16026,6 +16163,12 @@ static NSDictionary *SpliceKit_handleRequest(NSDictionary *request) {
         result = SpliceKit_handleCaptionsVerify(params);
     } else if ([method isEqualToString:@"captions.cleanup"]) {
         result = SpliceKit_handleCaptionsCleanup(params);
+    }
+    // native captions (FFAnchoredCaption objects in caption lane)
+    else if ([method isEqualToString:@"nativeCaptions.generate"]) {
+        result = SpliceKit_handleNativeCaptionsGenerate(params);
+    } else if ([method isEqualToString:@"nativeCaptions.verify"]) {
+        result = SpliceKit_handleNativeCaptionsVerify(params);
     }
     // scene detection
     else if ([method isEqualToString:@"scene.detect"]) {

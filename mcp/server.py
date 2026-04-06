@@ -3671,6 +3671,63 @@ def set_caption_words(words: str) -> str:
     return _fmt(r)
 
 
+@mcp.tool()
+def generate_native_captions(grouping: str = "word", language: str = "en",
+                              max_words: int = 1, max_seconds: float = 3.0,
+                              format: str = "ITT") -> str:
+    """Generate native FCP captions (FFAnchoredCaption) with word-level timing.
+
+    Unlike generate_captions() which creates styled Motion title clips for
+    social media, this creates FCP's native caption/subtitle objects that
+    appear in the dedicated caption lane. These are real captions — editable
+    in FCP's caption editor and exportable as ITT/SRT/SCC files.
+
+    The key feature: words appear one at a time (one caption per word),
+    using precise word-level timing from Parakeet transcription.
+
+    Requires words to be loaded first via open_captions() or set_caption_words().
+
+    Args:
+        grouping: How to group words into captions.
+                  "word" - one caption per word (default, words appear one at a time)
+                  "phrase" or "sentence" - one caption per sentence
+                  "group:N" - N words per caption (e.g. "group:3")
+                  "time:S" - max S seconds per caption (e.g. "time:2.0")
+                  "social" - 2-3 words, break on pauses (TikTok/Reels style)
+        language: Language identifier (e.g. "en", "en-US", "fr")
+        max_words: Override max words per caption (when grouping="word" or "group:N")
+        max_seconds: Override max duration per caption (when grouping="time:S")
+        format: Caption format - "ITT" (default), "SRT", or "CEA608"
+
+    Returns the number of native captions created and their placement status.
+    """
+    params = {
+        "grouping": grouping,
+        "language": language,
+        "maxWords": max_words,
+        "maxSeconds": max_seconds,
+        "format": format,
+    }
+    r = bridge.call("nativeCaptions.generate", **params)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def verify_native_captions() -> str:
+    """Verify native captions on the current timeline.
+
+    Walks the timeline's caption lane and reports all FFAnchoredCaption
+    objects found — their text, display names, and count. Use after
+    generate_native_captions() to confirm captions were placed correctly.
+    """
+    r = bridge.call("nativeCaptions.verify")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
 # MCP servers communicate over stdio -- the AI tool framework handles the transport
 if __name__ == "__main__":
     mcp.run(transport="stdio")
