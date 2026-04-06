@@ -244,6 +244,11 @@ SOURCES=(
     "$REPO_DIR/Sources/SpliceKitRuntime.m"
     "$REPO_DIR/Sources/SpliceKitSwizzle.m"
     "$REPO_DIR/Sources/SpliceKitServer.m"
+    "$REPO_DIR/Sources/SpliceKitLogPanel.m"
+    "$REPO_DIR/Sources/SpliceKitTranscriptPanel.m"
+    "$REPO_DIR/Sources/SpliceKitCaptionPanel.m"
+    "$REPO_DIR/Sources/SpliceKitCommandPalette.m"
+    "$REPO_DIR/Sources/SpliceKitDebugUI.m"
 )
 
 info "Compiling ${#SOURCES[@]} source files..."

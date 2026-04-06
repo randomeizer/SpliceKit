@@ -1722,14 +1722,22 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
 
     // ---------------------------------------------------------------
     // Step 0: Remember the user's current sequence so we can switch back.
+    // Store both the object reference AND display name since the pointer
+    // may become stale after FCPXML import modifies the object graph.
     // ---------------------------------------------------------------
     __block id userSequence = nil;
+    __block NSString *userSequenceName = nil;
     SpliceKit_executeOnMainThread(^{
         userSequence = SpliceKitCaption_currentSequence();
+        if (userSequence) {
+            userSequenceName = ((id (*)(id, SEL))objc_msgSend)(userSequence,
+                NSSelectorFromString(@"displayName"));
+        }
     });
     if (!userSequence) {
         return @{@"error": @"No active timeline — open a project first"};
     }
+    SpliceKit_log(@"[Captions] User's project: '%@'", userSequenceName);
 
     double totalDuration = 0;
     for (SpliceKitCaptionSegment *seg in self.mutableSegments) {
@@ -1843,22 +1851,22 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
         }
     });
 
-    // Wait for temp timeline to become active
+    // Wait for temp timeline to become active (match by exact temp name)
     BOOL tempReady = SpliceKitCaption_pollMainThread(^{
         id tm = SpliceKit_getActiveTimelineModule();
         if (!tm) return NO;
         id seq = ((id (*)(id, SEL))objc_msgSend)(tm, NSSelectorFromString(@"sequence"));
         if (!seq) return NO;
         NSString *name = ((id (*)(id, SEL))objc_msgSend)(seq, NSSelectorFromString(@"displayName"));
-        return (BOOL)(name && [name hasPrefix:kCaptionImportProjectPrefix]);
-    }, 3.0, 0.2);
+        return (BOOL)(name && [name isEqualToString:tempName]);
+    }, 5.0, 0.3);
 
     if (!tempReady) {
-        SpliceKit_log(@"[Captions] Warning: temp project may not be fully loaded");
+        SpliceKit_log(@"[Captions] Warning: temp project '%@' may not be fully loaded", tempName);
     }
 
-    // Give FCP a moment to finish loading the timeline UI
-    [NSThread sleepForTimeInterval:0.3];
+    // Give FCP time to finish loading the timeline UI
+    [NSThread sleepForTimeInterval:0.5];
 
     // Select all items in temp project, then copy to clipboard
     SpliceKit_executeOnMainThread(^{
@@ -1878,6 +1886,9 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
 
     // ---------------------------------------------------------------
     // Step 4: Switch back to user's project → seek to start → paste as connected.
+    // The saved userSequence pointer should still be valid — FCPXML import
+    // creates NEW sequences, it doesn't mutate existing ones. But we verify
+    // by display name as a safety check.
     // ---------------------------------------------------------------
     SpliceKit_executeOnMainThread(^{
         id appDelegate = [NSApp delegate];
@@ -1887,26 +1898,63 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
             SEL loadSel = NSSelectorFromString(@"loadEditorForSequence:");
             if ([editorContainer respondsToSelector:loadSel]) {
                 ((void (*)(id, SEL, id))objc_msgSend)(editorContainer, loadSel, userSequence);
+                SpliceKit_log(@"[Captions] loadEditorForSequence: called for '%@'", userSequenceName);
             }
         }
     });
 
-    // Wait for user's timeline to become active
+    // Wait for user's timeline to become active — match by name since pointer
+    // comparison can fail if the object graph was reorganized during import.
     BOOL userReady = SpliceKitCaption_pollMainThread(^{
         id tm = SpliceKit_getActiveTimelineModule();
         if (!tm) return NO;
         id seq = ((id (*)(id, SEL))objc_msgSend)(tm, NSSelectorFromString(@"sequence"));
-        return (BOOL)(seq == userSequence);
-    }, 3.0, 0.2);
+        if (!seq) return NO;
+        NSString *name = ((id (*)(id, SEL))objc_msgSend)(seq, NSSelectorFromString(@"displayName"));
+        // Match by name AND verify it's NOT the temp project
+        return (BOOL)(name && [name isEqualToString:userSequenceName]
+                      && ![name hasPrefix:kCaptionImportProjectPrefix]);
+    }, 5.0, 0.3);
 
     if (!userReady) {
-        SpliceKit_log(@"[Captions] Warning: user project may not be fully loaded");
+        SpliceKit_log(@"[Captions] ERROR: failed to switch back to user project '%@'", userSequenceName);
+        // Don't paste on wrong timeline — abort gracefully
+        SpliceKit_executeOnMainThread(^{
+            if (tempSeq) SpliceKitCaption_deleteSequence(tempSeq);
+        });
+        return @{@"error": [NSString stringWithFormat:
+            @"Failed to switch back to project '%@' — captions imported but not pasted. "
+            @"Use timeline_action('undo') or navigate back to your project manually.",
+            userSequenceName],
+                 @"insertedCount": @(0),
+                 @"fcpxmlPath": xmlPath};
     }
-    [NSThread sleepForTimeInterval:0.3];
+    SpliceKit_log(@"[Captions] Switched back to user project '%@'", userSequenceName);
+    [NSThread sleepForTimeInterval:0.5];
 
-    // Seek playhead to start of timeline so captions paste at the correct positions
+    // Seek playhead to time 0 via direct ObjC call (not responder chain which can miss).
+    // Captions must paste at the start so their offsets align with the original timeline.
     SpliceKit_executeOnMainThread(^{
-        [[NSApplication sharedApplication] sendAction:NSSelectorFromString(@"goToBeginning:")
+        id tm = SpliceKit_getActiveTimelineModule();
+        if (tm) {
+            SpliceKitCaption_CMTime zeroTime = {0, 600, 1, 0}; // 0s, valid
+            SEL setSel = NSSelectorFromString(@"setPlayheadTime:");
+            if ([tm respondsToSelector:setSel]) {
+                ((void (*)(id, SEL, SpliceKitCaption_CMTime))objc_msgSend)(tm, setSel, zeroTime);
+                SpliceKit_log(@"[Captions] Playhead set to 0s via setPlayheadTime:");
+            } else {
+                // Fallback to responder chain
+                [[NSApplication sharedApplication] sendAction:NSSelectorFromString(@"goToBeginning:")
+                                                           to:nil from:nil];
+                SpliceKit_log(@"[Captions] Playhead set via goToBeginning: fallback");
+            }
+        }
+    });
+    [NSThread sleepForTimeInterval:0.2];
+
+    // Deselect all first — pasteAnchored: with a selection can cause unexpected behavior
+    SpliceKit_executeOnMainThread(^{
+        [[NSApplication sharedApplication] sendAction:NSSelectorFromString(@"deselectAll:")
                                                    to:nil from:nil];
     });
     [NSThread sleepForTimeInterval:0.1];
@@ -1918,7 +1966,7 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
             sendAction:NSSelectorFromString(@"pasteAnchored:")
                     to:nil from:nil];
     });
-    [NSThread sleepForTimeInterval:0.2];
+    [NSThread sleepForTimeInterval:0.3];
 
     SpliceKit_log(@"[Captions] Paste as connected: %@", pasteHandled ? @"handled" : @"not handled");
 
@@ -1949,11 +1997,17 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
                 if (![items isKindOfClass:[NSArray class]]) return;
 
                 // Walk connected titles: apply position and verify first one
+                // anchoredItems returns NSSet, not NSArray
                 for (id item in items) {
                     SEL anchoredSel = NSSelectorFromString(@"anchoredItems");
                     if (![item respondsToSelector:anchoredSel]) continue;
-                    NSArray *anchored = ((id (*)(id, SEL))objc_msgSend)(item, anchoredSel);
-                    if (![anchored isKindOfClass:[NSArray class]]) continue;
+                    id anchoredRaw = ((id (*)(id, SEL))objc_msgSend)(item, anchoredSel);
+                    NSArray *anchored = nil;
+                    if ([anchoredRaw isKindOfClass:[NSSet class]])
+                        anchored = [(NSSet *)anchoredRaw allObjects];
+                    else if ([anchoredRaw isKindOfClass:[NSArray class]])
+                        anchored = anchoredRaw;
+                    if (!anchored || anchored.count == 0) continue;
 
                     for (id conn in anchored) {
                         verifiedTitleCount++;
@@ -1967,19 +2021,21 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
                         // Only deeply inspect first title for verification
                         if (verifiedText) continue;
 
-                        SEL esSel = NSSelectorFromString(@"effectStack");
-                        id es = [conn respondsToSelector:esSel]
-                            ? ((id (*)(id, SEL))objc_msgSend)(conn, esSel) : nil;
-                        if (!es) continue;
-
-                        SEL efSel = NSSelectorFromString(@"visibleEffects");
-                        if (![es respondsToSelector:efSel]) continue;
-                        NSArray *effects = ((id (*)(id, SEL))objc_msgSend)(es, efSel);
-                        for (id effect in effects) {
-                            SEL cfSel = NSSelectorFromString(@"channelFolder");
-                            if (![effect respondsToSelector:cfSel]) continue;
-                            id cf = ((id (*)(id, SEL))objc_msgSend)(effect, cfSel);
-                            if (!cf) continue;
+                        // Motion titles store text on conn.effect.channelFolder,
+                        // not on effectStack.visibleEffects (which is empty for generators).
+                        id cf = nil;
+                        @try {
+                            SEL effectSel = NSSelectorFromString(@"effect");
+                            id genEffect = [conn respondsToSelector:effectSel]
+                                ? ((id (*)(id, SEL))objc_msgSend)(conn, effectSel) : nil;
+                            if (genEffect) {
+                                SEL cfSel = NSSelectorFromString(@"channelFolder");
+                                cf = [genEffect respondsToSelector:cfSel]
+                                    ? ((id (*)(id, SEL))objc_msgSend)(genEffect, cfSel) : nil;
+                            }
+                        } @catch (NSException *e) {}
+                        if (!cf) continue;
+                        {
 
                             // Recursively find CHChannelText
                             Class chTextClass = objc_getClass("CHChannelText");
@@ -2385,6 +2441,12 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
     if (wordLevelPath) result[@"wordLevelFcpxmlPath"] = wordLevelPath;
     if (directResult[@"insertedCount"]) result[@"insertedCount"] = directResult[@"insertedCount"];
     if (directResult[@"warnings"]) result[@"warnings"] = directResult[@"warnings"];
+    if (directResult[@"warning"]) result[@"warning"] = directResult[@"warning"];
+    if (directResult[@"verification"]) result[@"verification"] = directResult[@"verification"];
+    if (directResult[@"verificationWarning"]) result[@"verificationWarning"] = directResult[@"verificationWarning"];
+    if (directResult[@"pasteHandled"]) result[@"pasteHandled"] = directResult[@"pasteHandled"];
+    if (directResult[@"positionApplied"]) result[@"positionApplied"] = directResult[@"positionApplied"];
+    if (directResult[@"positionY"]) result[@"positionY"] = directResult[@"positionY"];
     if (!directOK && directResult[@"error"]) result[@"error"] = directResult[@"error"];
     self.lastGenerateResult = [result copy];
     return result;

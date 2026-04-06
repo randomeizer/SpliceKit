@@ -4285,11 +4285,17 @@ static NSDictionary *SpliceKit_handleCaptionsVerify(NSDictionary *params) {
             for (id item in items) {
                 if (titleCount >= maxToCheck) break;
 
-                // Get anchored items (connected clips)
+                // Get anchored items (connected clips) — returns NSSet, not NSArray
                 SEL anchoredSel = NSSelectorFromString(@"anchoredItems");
-                NSArray *anchored = [item respondsToSelector:anchoredSel]
+                id anchoredRaw = [item respondsToSelector:anchoredSel]
                     ? ((id (*)(id, SEL))objc_msgSend)(item, anchoredSel) : nil;
-                if (![anchored isKindOfClass:[NSArray class]]) continue;
+                // Convert NSSet to NSArray for enumeration, or use directly if already NSArray
+                NSArray *anchored = nil;
+                if ([anchoredRaw isKindOfClass:[NSSet class]])
+                    anchored = [(NSSet *)anchoredRaw allObjects];
+                else if ([anchoredRaw isKindOfClass:[NSArray class]])
+                    anchored = anchoredRaw;
+                if (!anchored || anchored.count == 0) continue;
 
                 for (id connectedItem in anchored) {
                     if (titleCount >= maxToCheck) break;
@@ -4314,9 +4320,25 @@ static NSDictionary *SpliceKit_handleCaptionsVerify(NSDictionary *params) {
                     } @catch (NSException *e) {}
                     entry[@"class"] = className;
 
-                    // Walk effect channel tree looking for text
-                    if (effectStack) {
-                        NSMutableArray *textChannels = [NSMutableArray array];
+                    // Walk the generator's own effect channel tree for text.
+                    // Motion titles store text at: effect → channelFolder → Project → Main → Title → Object → CHChannelText(ID=369)
+                    // The effectStack.visibleEffects are user-added effects (empty for generators);
+                    // the title's own text is on FFAnchoredEffectComponent.effect.channelFolder.
+                    NSMutableArray *textChannels = [NSMutableArray array];
+                    @try {
+                        SEL effectSel = NSSelectorFromString(@"effect");
+                        id genEffect = [connectedItem respondsToSelector:effectSel]
+                            ? ((id (*)(id, SEL))objc_msgSend)(connectedItem, effectSel) : nil;
+                        if (genEffect) {
+                            SEL cfSel = NSSelectorFromString(@"channelFolder");
+                            id cf = [genEffect respondsToSelector:cfSel]
+                                ? ((id (*)(id, SEL))objc_msgSend)(genEffect, cfSel) : nil;
+                            if (cf) SpliceKit_collectTitleText(cf, textChannels, 0);
+                        }
+                    } @catch (NSException *e) {}
+
+                    // Fallback: try effectStack.visibleEffects too
+                    if (textChannels.count == 0 && effectStack) {
                         @try {
                             SEL efSel = NSSelectorFromString(@"visibleEffects");
                             if ([effectStack respondsToSelector:efSel]) {
@@ -4330,15 +4352,15 @@ static NSDictionary *SpliceKit_handleCaptionsVerify(NSDictionary *params) {
                                 }
                             }
                         } @catch (NSException *e) {}
+                    }
 
-                        if (textChannels.count > 0) {
-                            NSDictionary *first = textChannels.firstObject;
-                            if (first[@"text"]) entry[@"text"] = first[@"text"];
-                            if (first[@"fontSize"]) entry[@"fontSize"] = first[@"fontSize"];
-                            if (first[@"fontFamily"]) entry[@"fontFamily"] = first[@"fontFamily"];
-                            if (first[@"fontName"]) entry[@"fontName"] = first[@"fontName"];
-                            entry[@"textChannelCount"] = @(textChannels.count);
-                        }
+                    if (textChannels.count > 0) {
+                        NSDictionary *first = textChannels.firstObject;
+                        if (first[@"text"]) entry[@"text"] = first[@"text"];
+                        if (first[@"fontSize"]) entry[@"fontSize"] = first[@"fontSize"];
+                        if (first[@"fontFamily"]) entry[@"fontFamily"] = first[@"fontFamily"];
+                        if (first[@"fontName"]) entry[@"fontName"] = first[@"fontName"];
+                        entry[@"textChannelCount"] = @(textChannels.count);
                     }
 
                     [verified addObject:entry];
@@ -10287,37 +10309,47 @@ static NSDictionary *SpliceKit_handleInspectorGetTitle(NSDictionary *params) {
                 }
             } @catch (NSException *e) {}
 
-            if (!effectStack) {
-                result = @{@"info": info, @"error": @"No effect stack"};
-                return;
-            }
-
-            // Walk all visible effects looking for text channels
+            // Walk the generator's own effect for text channels first.
+            // Motion titles: text is on clip.effect.channelFolder, not effectStack.visibleEffects.
             NSMutableArray *textChannels = [NSMutableArray array];
             NSMutableArray *effectNames = [NSMutableArray array];
-            @try {
-                SEL efSel = NSSelectorFromString(@"visibleEffects");
-                if ([effectStack respondsToSelector:efSel]) {
-                    NSArray *effects = ((id (*)(id, SEL))objc_msgSend)(effectStack, efSel);
-                    for (id effect in effects) {
-                        NSString *efName = @"(unknown)";
-                        @try {
-                            if ([effect respondsToSelector:@selector(displayName)])
-                                efName = [((id (*)(id, SEL))objc_msgSend)(effect, @selector(displayName)) description];
-                        } @catch (NSException *e) {}
-                        [effectNames addObject:efName];
 
-                        // Get the channelFolder tree and find CHChannelText nodes
-                        SEL cfSel = NSSelectorFromString(@"channelFolder");
-                        if ([effect respondsToSelector:cfSel]) {
-                            id cf = ((id (*)(id, SEL))objc_msgSend)(effect, cfSel);
-                            if (cf) {
-                                SpliceKit_collectTitleText(cf, textChannels, 0);
+            // Primary path: clip.effect (FFAnchoredEffectComponent)
+            @try {
+                SEL effectSel = NSSelectorFromString(@"effect");
+                id genEffect = [clip respondsToSelector:effectSel]
+                    ? ((id (*)(id, SEL))objc_msgSend)(clip, effectSel) : nil;
+                if (genEffect) {
+                    SEL cfSel = NSSelectorFromString(@"channelFolder");
+                    id cf = [genEffect respondsToSelector:cfSel]
+                        ? ((id (*)(id, SEL))objc_msgSend)(genEffect, cfSel) : nil;
+                    if (cf) SpliceKit_collectTitleText(cf, textChannels, 0);
+                }
+            } @catch (NSException *e) {}
+
+            // Fallback: effectStack.visibleEffects
+            if (textChannels.count == 0 && effectStack) {
+                @try {
+                    SEL efSel = NSSelectorFromString(@"visibleEffects");
+                    if ([effectStack respondsToSelector:efSel]) {
+                        NSArray *effects = ((id (*)(id, SEL))objc_msgSend)(effectStack, efSel);
+                        for (id effect in effects) {
+                            NSString *efName = @"(unknown)";
+                            @try {
+                                if ([effect respondsToSelector:@selector(displayName)])
+                                    efName = [((id (*)(id, SEL))objc_msgSend)(effect, @selector(displayName)) description];
+                            } @catch (NSException *e) {}
+                            [effectNames addObject:efName];
+
+                            SEL cfSel = NSSelectorFromString(@"channelFolder");
+                            if ([effect respondsToSelector:cfSel]) {
+                                id cf = ((id (*)(id, SEL))objc_msgSend)(effect, cfSel);
+                                if (cf) SpliceKit_collectTitleText(cf, textChannels, 0);
                             }
                         }
                     }
-                }
-            } @catch (NSException *e) {}
+                } @catch (NSException *e) {}
+            }
 
             info[@"effectNames"] = effectNames;
             info[@"textChannelCount"] = @(textChannels.count);
