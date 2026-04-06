@@ -769,6 +769,7 @@ static NSString * const kSeparatorRowID = @"FCPSeparatorRow";
     add(@"SpliceKit Options", @"bridgeOptions", @"bridge_options", SpliceKitCommandCategoryOptions, @"Options", nil, @"Open SpliceKit options panel", @[@"settings", @"preferences", @"config"]);
     add(@"Toggle Effect Drag as Adjustment Clip", @"toggleEffectDragAsAdjustmentClip", @"bridge_toggle", SpliceKitCommandCategoryOptions, @"Options", nil, @"Enable/disable dragging an effect to empty timeline space to create an adjustment clip", @[@"effect drag", @"adjustment layer", @"drop effect", @"effect browser"]);
     add(@"Toggle Viewer Pinch-to-Zoom", @"toggleViewerPinchZoom", @"bridge_toggle", SpliceKitCommandCategoryOptions, @"Options", nil, @"Enable/disable trackpad pinch-to-zoom on the viewer", @[@"trackpad", @"zoom", @"magnify", @"gesture"]);
+    add(@"Cycle Default Spatial Conform", @"cycleSpatialConform", @"bridge_conform_cycle", SpliceKitCommandCategoryOptions, @"Options", nil, @"Cycle default spatial conform type: Fit -> Fill -> None", @[@"spatial", @"conform", @"fit", @"fill", @"none", @"scale", @"resize"]);
 
     self.allCommands = [cmds copy];
     self.masterCommands = self.allCommands;
@@ -1438,6 +1439,15 @@ static NSString * const kSeparatorRowID = @"FCPSeparatorRow";
         } else {
             result = @{@"error": [NSString stringWithFormat:@"Unknown toggle: %@", action]};
         }
+    } else if ([type isEqualToString:@"bridge_conform_cycle"]) {
+        NSString *current = SpliceKit_getDefaultSpatialConformType();
+        NSString *next;
+        if ([current isEqualToString:@"fit"]) next = @"fill";
+        else if ([current isEqualToString:@"fill"]) next = @"none";
+        else next = @"fit";
+        SpliceKit_setDefaultSpatialConformType(next);
+        result = @{@"action": action, @"status": @"ok",
+                   @"defaultSpatialConformType": next};
     }
 
     if (!result) {
@@ -2161,14 +2171,14 @@ static NSString *FCPFavoriteKey(NSString *type, NSString *action) {
 
 - (void)showBridgeOptionsPanel {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSPanel *opts = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 380, 290)
+        NSPanel *opts = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 380, 380)
             styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
             backing:NSBackingStoreBuffered defer:NO];
         opts.title = @"SpliceKit Options";
         [opts center];
 
         NSView *v = opts.contentView;
-        CGFloat y = 245;
+        CGFloat y = 335;
 
         // --- Effect Drag as Adjustment Clip ---
         NSButton *effectDragCheck = [NSButton checkboxWithTitle:@"Effect Drag as Adjustment Clip"
@@ -2209,6 +2219,34 @@ static NSString *FCPFavoriteKey(NSString *type, NSString *action) {
         pinchDesc.textColor = [NSColor secondaryLabelColor];
         [v addSubview:pinchDesc];
 
+        y -= 62;
+
+        // --- Default Spatial Conform ---
+        NSTextField *conformLabel = [NSTextField labelWithString:@"Default Spatial Conform:"];
+        conformLabel.frame = NSMakeRect(20, y, 180, 20);
+        [v addSubview:conformLabel];
+
+        NSPopUpButton *conformPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(200, y - 2, 150, 26) pullsDown:NO];
+        [conformPopup addItemsWithTitles:@[@"Fit (Default)", @"Fill", @"None"]];
+        conformPopup.target = self;
+        conformPopup.action = @selector(_bridgeOptionConformChanged:);
+        objc_setAssociatedObject(conformPopup, "panel", opts, OBJC_ASSOCIATION_RETAIN);
+
+        NSString *currentConform = SpliceKit_getDefaultSpatialConformType();
+        if ([currentConform isEqualToString:@"fill"]) [conformPopup selectItemAtIndex:1];
+        else if ([currentConform isEqualToString:@"none"]) [conformPopup selectItemAtIndex:2];
+        else [conformPopup selectItemAtIndex:0];
+        [v addSubview:conformPopup];
+
+        y -= 24;
+        NSTextField *conformDesc = [NSTextField wrappingLabelWithString:
+            @"Override the default spatial conform type for newly added clips. "
+            @"Fit letterboxes, Fill crops to fill the frame, None uses native resolution."];
+        conformDesc.frame = NSMakeRect(38, y - 38, 320, 48);
+        conformDesc.font = [NSFont systemFontOfSize:11];
+        conformDesc.textColor = [NSColor secondaryLabelColor];
+        [v addSubview:conformDesc];
+
         // --- Close button ---
         NSButton *closeBtn = [NSButton buttonWithTitle:@"Done" target:opts action:@selector(close)];
         closeBtn.frame = NSMakeRect(280, 15, 80, 32);
@@ -2228,6 +2266,15 @@ static NSString *FCPFavoriteKey(NSString *type, NSString *action) {
 - (void)_bridgeOptionEffectDragToggled:(NSButton *)sender {
     BOOL enabled = (sender.state == NSControlStateValueOn);
     SpliceKit_setEffectDragAsAdjustmentClipEnabled(enabled);
+}
+
+- (void)_bridgeOptionConformChanged:(NSPopUpButton *)sender {
+    NSInteger idx = [sender indexOfSelectedItem];
+    NSString *value;
+    if (idx == 1) value = @"fill";
+    else if (idx == 2) value = @"none";
+    else value = @"fit";
+    SpliceKit_setDefaultSpatialConformType(value);
 }
 
 - (void)enterTransitionBrowseMode {

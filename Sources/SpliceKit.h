@@ -118,6 +118,14 @@ void SpliceKit_installSuppressAutoImport(void);
 void SpliceKit_setSuppressAutoImportEnabled(BOOL enabled);
 BOOL SpliceKit_isSuppressAutoImportEnabled(void);
 
+// Overrides the default Spatial Conform Type for newly added timeline clips.
+// FCP normally defaults to "Fit" (letterbox/pillarbox). This lets users choose
+// "Fill" (scale to fill, cropping edges) or "None" (native resolution) instead.
+// Value is a string: "fit", "fill", or "none".
+void SpliceKit_installDefaultSpatialConformType(void);
+void SpliceKit_setDefaultSpatialConformType(NSString *value);
+NSString *SpliceKit_getDefaultSpatialConformType(void);
+
 #pragma mark - Cached Class References
 //
 // We look these up once at launch instead of calling objc_getClass() on every

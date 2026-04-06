@@ -400,6 +400,9 @@ set_bridge_option("effectDragAsAdjustmentClip", True)   # drag effects to create
 set_bridge_option("viewerPinchZoom", True)              # trackpad pinch-to-zoom on viewer
 set_bridge_option("videoOnlyKeepsAudioDisabled", True)  # keep audio disabled in video-only mode
 set_bridge_option("suppressAutoImport", True)           # stop auto-opening Import window on card/camera mount
+set_bridge_option_value("defaultSpatialConformType", "fill")  # default new clips to Fill (crop to fill frame)
+set_bridge_option_value("defaultSpatialConformType", "none")  # default new clips to None (native resolution)
+set_bridge_option_value("defaultSpatialConformType", "fit")   # restore FCP default (Fit)
 ```
 
 ## Object Handles

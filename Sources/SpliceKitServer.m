@@ -5549,6 +5549,7 @@ static NSDictionary *SpliceKit_handleOptionsGet(NSDictionary *params) {
         @"viewerPinchZoom": @(SpliceKit_isViewerPinchZoomEnabled()),
         @"videoOnlyKeepsAudioDisabled": @(SpliceKit_isVideoOnlyKeepsAudioDisabledEnabled()),
         @"suppressAutoImport": @(SpliceKit_isSuppressAutoImportEnabled()),
+        @"defaultSpatialConformType": SpliceKit_getDefaultSpatialConformType(),
     };
 }
 
@@ -5579,6 +5580,25 @@ static NSDictionary *SpliceKit_handleOptionsSet(NSDictionary *params) {
         SpliceKit_setSuppressAutoImportEnabled([enabled boolValue]);
         return @{@"status": @"ok",
                  @"suppressAutoImport": @(SpliceKit_isSuppressAutoImportEnabled())};
+    } else if ([option isEqualToString:@"defaultSpatialConformType"]) {
+        NSString *value = params[@"value"];
+        if (!value) {
+            // Backward compat: accept enabled bool (true -> "fill", false -> "fit")
+            NSNumber *enabled = params[@"enabled"];
+            if (enabled) {
+                value = [enabled boolValue] ? @"fill" : @"fit";
+            } else {
+                return @{@"error": @"'value' parameter required (\"fit\", \"fill\", or \"none\")"};
+            }
+        }
+        value = [value lowercaseString];
+        if (!([value isEqualToString:@"fit"] || [value isEqualToString:@"fill"] || [value isEqualToString:@"none"])) {
+            return @{@"error": [NSString stringWithFormat:
+                @"Invalid value '%@'. Must be \"fit\", \"fill\", or \"none\".", value]};
+        }
+        SpliceKit_setDefaultSpatialConformType(value);
+        return @{@"status": @"ok",
+                 @"defaultSpatialConformType": SpliceKit_getDefaultSpatialConformType()};
     }
 
     return @{@"error": [NSString stringWithFormat:@"Unknown option: %@", option]};
@@ -8514,6 +8534,280 @@ void SpliceKit_installSuppressAutoImport(void) {
 
     sSuppressAutoImportInstalled = YES;
     SpliceKit_log(@"[SuppressAutoImport] Swizzle installed");
+}
+
+#pragma mark - Default Spatial Conform Type
+
+// FCP defaults to "Fit" (letterbox/pillarbox) when a clip's native resolution
+// doesn't match the project. This feature overrides the default to "Fill" or "None"
+// for newly added clips. It swizzles the four main edit action methods on
+// FFEditActionMgr, then modifies the conform effect on clips added by the edit.
+
+static NSString * const kSpliceKitDefaultSpatialConformType = @"SpliceKitDefaultSpatialConformType";
+static IMP sOrigInsertConform = NULL;
+static IMP sOrigAppendConform = NULL;
+static IMP sOrigOverwriteConform = NULL;
+static IMP sOrigAnchorConform = NULL;
+static BOOL sDefaultConformInstalled = NO;
+
+// Cached selectors discovered at install time via runtime introspection
+static SEL sCachedConformEffectSel = NULL;   // on FFEffectStack
+static SEL sCachedSetConformTypeSel = NULL;  // on FFHeConformEffect
+
+NSString *SpliceKit_getDefaultSpatialConformType(void) {
+    NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:kSpliceKitDefaultSpatialConformType];
+    if (val && ([val isEqualToString:@"fit"] || [val isEqualToString:@"fill"] || [val isEqualToString:@"none"])) {
+        return val;
+    }
+    return @"fit"; // default
+}
+
+void SpliceKit_setDefaultSpatialConformType(NSString *value) {
+    if (!value) value = @"fit";
+    value = [value lowercaseString];
+    if (!([value isEqualToString:@"fit"] || [value isEqualToString:@"fill"] || [value isEqualToString:@"none"])) {
+        SpliceKit_log(@"[DefaultConform] Invalid value '%@', ignoring (must be fit/fill/none)", value);
+        return;
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:kSpliceKitDefaultSpatialConformType];
+    if (![value isEqualToString:@"fit"]) {
+        SpliceKit_installDefaultSpatialConformType();
+    }
+    SpliceKit_log(@"[DefaultConform] Set to '%@'", value);
+}
+
+// Map string type to integer value used by FFHeConformEffect.
+// FCP internal values: 1 = Fit, 2 = Fill, 0 = None
+static NSInteger SpliceKit_conformTypeToInt(NSString *type) {
+    if ([type isEqualToString:@"fill"]) return 2;
+    if ([type isEqualToString:@"none"]) return 0;
+    return 1; // "fit" default
+}
+
+// Probe the ObjC runtime to find the selectors we need on FFEffectStack
+// and FFHeConformEffect. Returns YES if both were found.
+static BOOL SpliceKit_discoverConformSelectors(void) {
+    if (sCachedConformEffectSel && sCachedSetConformTypeSel) return YES;
+
+    // --- Find the conform effect accessor on FFEffectStack ---
+    Class stackClass = objc_getClass("FFEffectStack");
+    if (!stackClass) {
+        SpliceKit_log(@"[DefaultConform] FFEffectStack class not found");
+        return NO;
+    }
+
+    NSArray *conformCandidates = @[@"conformEffect", @"intrinsicConformEffect",
+                                    @"spatialConformEffect", @"heConformEffect"];
+    for (NSString *name in conformCandidates) {
+        SEL sel = NSSelectorFromString(name);
+        if (class_getInstanceMethod(stackClass, sel)) {
+            sCachedConformEffectSel = sel;
+            SpliceKit_log(@"[DefaultConform] Found conform effect selector: -[FFEffectStack %@]", name);
+            break;
+        }
+    }
+    if (!sCachedConformEffectSel) {
+        SpliceKit_log(@"[DefaultConform] Could not find conform effect selector on FFEffectStack. "
+                      @"Tried: %@", [conformCandidates componentsJoinedByString:@", "]);
+        return NO;
+    }
+
+    // --- Find the type setter on FFHeConformEffect ---
+    Class conformClass = objc_getClass("FFHeConformEffect");
+    if (!conformClass) {
+        SpliceKit_log(@"[DefaultConform] FFHeConformEffect class not found");
+        return NO;
+    }
+
+    NSArray *typeCandidates = @[@"setConformType:", @"setType:", @"setSpatialConformType:",
+                                 @"setConformMode:"];
+    for (NSString *name in typeCandidates) {
+        SEL sel = NSSelectorFromString(name);
+        if (class_getInstanceMethod(conformClass, sel)) {
+            sCachedSetConformTypeSel = sel;
+            SpliceKit_log(@"[DefaultConform] Found type setter: -[FFHeConformEffect %@]", name);
+            break;
+        }
+    }
+    if (!sCachedSetConformTypeSel) {
+        SpliceKit_log(@"[DefaultConform] Could not find type setter on FFHeConformEffect. "
+                      @"Tried: %@", [typeCandidates componentsJoinedByString:@", "]);
+        return NO;
+    }
+
+    return YES;
+}
+
+// Snapshot selected items from the timeline module
+static NSArray *SpliceKit_conformGetSelectedItems(id timelineModule) {
+    if (!timelineModule) return @[];
+    SEL sel = NSSelectorFromString(@"selectedItems");
+    if (![timelineModule respondsToSelector:sel]) return @[];
+    id items = ((id (*)(id, SEL))objc_msgSend)(timelineModule, sel);
+    return [items isKindOfClass:[NSArray class]] ? [items copy] : @[];
+}
+
+// Build pointer set for fast identity comparison
+static NSSet *SpliceKit_conformPointerSet(NSArray *items) {
+    NSMutableSet *set = [NSMutableSet setWithCapacity:items.count];
+    for (id item in items) {
+        [set addObject:[NSValue valueWithNonretainedObject:item]];
+    }
+    return set;
+}
+
+// After an edit, find newly added clips and set their spatial conform type
+static void SpliceKit_conformSetNewClipType(id timelineModule, NSArray *selectedBefore) {
+    NSString *conformType = SpliceKit_getDefaultSpatialConformType();
+    if ([conformType isEqualToString:@"fit"]) return; // FCP default, nothing to do
+    if (!sCachedConformEffectSel || !sCachedSetConformTypeSel) return;
+    if (!timelineModule) return;
+
+    NSArray *selectedAfter = SpliceKit_conformGetSelectedItems(timelineModule);
+    if (!selectedAfter.count) return;
+
+    NSSet *beforeSet = SpliceKit_conformPointerSet(selectedBefore);
+    NSInteger conformInt = SpliceKit_conformTypeToInt(conformType);
+
+    // Get the sequence for undo grouping
+    id sequence = nil;
+    SEL seqSel = NSSelectorFromString(@"sequence");
+    if ([timelineModule respondsToSelector:seqSel]) {
+        sequence = ((id (*)(id, SEL))objc_msgSend)(timelineModule, seqSel);
+    }
+
+    NSString *actionName = @"Set Spatial Conform";
+    if (sequence) {
+        SEL beginSel = NSSelectorFromString(@"actionBegin:");
+        if ([sequence respondsToSelector:beginSel]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(sequence, beginSel, actionName);
+        }
+    }
+
+    NSInteger modifiedCount = 0;
+    for (id clip in selectedAfter) {
+        if ([beforeSet containsObject:[NSValue valueWithNonretainedObject:clip]])
+            continue; // Not a new clip
+
+        // Get the clip's effect stack
+        SEL esSel = NSSelectorFromString(@"effectStack");
+        if (![clip respondsToSelector:esSel]) continue;
+        id effectStack = ((id (*)(id, SEL))objc_msgSend)(clip, esSel);
+        if (!effectStack) continue;
+
+        // Get the conform effect from the stack
+        if (![effectStack respondsToSelector:sCachedConformEffectSel]) continue;
+        id conformEffect = ((id (*)(id, SEL))objc_msgSend)(effectStack, sCachedConformEffectSel);
+        if (!conformEffect) continue;
+
+        // Set the conform type
+        if ([conformEffect respondsToSelector:sCachedSetConformTypeSel]) {
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(conformEffect, sCachedSetConformTypeSel, conformInt);
+            modifiedCount++;
+        }
+    }
+
+    if (sequence) {
+        SEL endSel = NSSelectorFromString(@"actionEnd:save:error:");
+        if ([sequence respondsToSelector:endSel]) {
+            ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(
+                sequence, endSel, actionName, YES, nil);
+        }
+    }
+
+    if (modifiedCount > 0) {
+        SpliceKit_log(@"[DefaultConform] Set %ld clip(s) to '%@'", (long)modifiedCount, conformType);
+    }
+}
+
+// --- Swizzled edit methods ---
+
+static void SpliceKit_swizzled_insertConform(id self, SEL _cmd, id sender) {
+    if ([SpliceKit_getDefaultSpatialConformType() isEqualToString:@"fit"]) {
+        ((void (*)(id, SEL, id))sOrigInsertConform)(self, _cmd, sender);
+        return;
+    }
+    id timeline = SpliceKit_getActiveTimelineModule();
+    NSArray *before = SpliceKit_conformGetSelectedItems(timeline);
+    ((void (*)(id, SEL, id))sOrigInsertConform)(self, _cmd, sender);
+    SpliceKit_conformSetNewClipType(timeline, before);
+}
+
+static void SpliceKit_swizzled_appendConform(id self, SEL _cmd, id sender) {
+    if ([SpliceKit_getDefaultSpatialConformType() isEqualToString:@"fit"]) {
+        ((void (*)(id, SEL, id))sOrigAppendConform)(self, _cmd, sender);
+        return;
+    }
+    id timeline = SpliceKit_getActiveTimelineModule();
+    NSArray *before = SpliceKit_conformGetSelectedItems(timeline);
+    ((void (*)(id, SEL, id))sOrigAppendConform)(self, _cmd, sender);
+    SpliceKit_conformSetNewClipType(timeline, before);
+}
+
+static void SpliceKit_swizzled_overwriteConform(id self, SEL _cmd, id sender) {
+    if ([SpliceKit_getDefaultSpatialConformType() isEqualToString:@"fit"]) {
+        ((void (*)(id, SEL, id))sOrigOverwriteConform)(self, _cmd, sender);
+        return;
+    }
+    id timeline = SpliceKit_getActiveTimelineModule();
+    NSArray *before = SpliceKit_conformGetSelectedItems(timeline);
+    ((void (*)(id, SEL, id))sOrigOverwriteConform)(self, _cmd, sender);
+    SpliceKit_conformSetNewClipType(timeline, before);
+}
+
+static void SpliceKit_swizzled_anchorConform(id self, SEL _cmd, id sender) {
+    if ([SpliceKit_getDefaultSpatialConformType() isEqualToString:@"fit"]) {
+        ((void (*)(id, SEL, id))sOrigAnchorConform)(self, _cmd, sender);
+        return;
+    }
+    id timeline = SpliceKit_getActiveTimelineModule();
+    NSArray *before = SpliceKit_conformGetSelectedItems(timeline);
+    ((void (*)(id, SEL, id))sOrigAnchorConform)(self, _cmd, sender);
+    SpliceKit_conformSetNewClipType(timeline, before);
+}
+
+void SpliceKit_installDefaultSpatialConformType(void) {
+    if (sDefaultConformInstalled) return;
+
+    // Discover FFHeConformEffect selectors at runtime
+    if (!SpliceKit_discoverConformSelectors()) {
+        SpliceKit_log(@"[DefaultConform] Selector discovery failed — feature unavailable");
+        return;
+    }
+
+    Class cls = objc_getClass("FFEditActionMgr");
+    if (!cls) {
+        SpliceKit_log(@"[DefaultConform] FFEditActionMgr class not found");
+        return;
+    }
+
+    struct { SEL sel; IMP *origPtr; IMP newImp; } swizzles[] = {
+        { NSSelectorFromString(@"insertWithSelectedMedia:"),
+          &sOrigInsertConform,
+          (IMP)SpliceKit_swizzled_insertConform },
+        { NSSelectorFromString(@"appendWithSelectedMedia:"),
+          &sOrigAppendConform,
+          (IMP)SpliceKit_swizzled_appendConform },
+        { NSSelectorFromString(@"overwriteWithSelectedMedia:"),
+          &sOrigOverwriteConform,
+          (IMP)SpliceKit_swizzled_overwriteConform },
+        { NSSelectorFromString(@"anchorWithSelectedMedia:"),
+          &sOrigAnchorConform,
+          (IMP)SpliceKit_swizzled_anchorConform },
+    };
+
+    for (int i = 0; i < 4; i++) {
+        Method m = class_getInstanceMethod(cls, swizzles[i].sel);
+        if (m && !*swizzles[i].origPtr) {
+            *swizzles[i].origPtr = method_setImplementation(m, swizzles[i].newImp);
+            SpliceKit_log(@"[DefaultConform] Swizzled -[FFEditActionMgr %@]",
+                          NSStringFromSelector(swizzles[i].sel));
+        }
+    }
+
+    sDefaultConformInstalled = YES;
+    SpliceKit_log(@"[DefaultConform] Swizzle installed (current: %@)",
+                  SpliceKit_getDefaultSpatialConformType());
 }
 
 #pragma mark - Transition Handlers

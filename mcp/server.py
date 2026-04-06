@@ -2109,7 +2109,7 @@ def get_bridge_options() -> str:
 
     Returns the state of all configurable options
     (e.g. effectDragAsAdjustmentClip, viewerPinchZoom, videoOnlyKeepsAudioDisabled,
-    suppressAutoImport).
+    suppressAutoImport, defaultSpatialConformType).
     """
     r = bridge.call("options.get")
     if _err(r):
@@ -2119,7 +2119,7 @@ def get_bridge_options() -> str:
 
 @mcp.tool()
 def set_bridge_option(option: str, enabled: bool) -> str:
-    """Toggle an SpliceKit option.
+    """Toggle a boolean SpliceKit option.
 
     Args:
         option: Option name. Currently supported:
@@ -2127,9 +2127,28 @@ def set_bridge_option(option: str, enabled: bool) -> str:
                 "viewerPinchZoom" - enable/disable trackpad pinch-to-zoom on the viewer
                 "videoOnlyKeepsAudioDisabled" - when Video-Only AV edit mode adds clips, keep audio+video but with audio disabled in inspector
                 "suppressAutoImport" - stop FCP from auto-opening the Import Media window when a card, camera, or iOS device mounts
+                For "defaultSpatialConformType", use set_bridge_option_value() instead.
         enabled: True to enable, False to disable
     """
     r = bridge.call("options.set", option=option, enabled=enabled)
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    return _fmt(r)
+
+
+@mcp.tool()
+def set_bridge_option_value(option: str, value: str) -> str:
+    """Set a string-valued SpliceKit option.
+
+    Args:
+        option: Option name. Currently supported:
+                "defaultSpatialConformType" - override the default spatial conform type for newly added clips
+        value: The value to set. For "defaultSpatialConformType":
+               "fit"  - Fit (letterbox/pillarbox, FCP default)
+               "fill" - Fill (scale to fill frame, crops edges)
+               "none" - None (native resolution, no scaling)
+    """
+    r = bridge.call("options.set", option=option, value=value)
     if _err(r):
         return f"Error: {r.get('error', r)}"
     return _fmt(r)

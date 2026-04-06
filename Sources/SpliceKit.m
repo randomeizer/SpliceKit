@@ -168,6 +168,9 @@ static void SpliceKit_checkCompatibility(void) {
 - (void)toggleViewerPinchZoom:(id)sender;
 - (void)toggleVideoOnlyKeepsAudioDisabled:(id)sender;
 - (void)toggleSuppressAutoImport:(id)sender;
+- (void)setDefaultConformFit:(id)sender;
+- (void)setDefaultConformFill:(id)sender;
+- (void)setDefaultConformNone:(id)sender;
 @property (nonatomic, weak) NSButton *toolbarButton;
 @property (nonatomic, weak) NSButton *paletteToolbarButton;
 @end
@@ -232,6 +235,37 @@ static void SpliceKit_checkCompatibility(void) {
     SpliceKit_setSuppressAutoImportEnabled(newState);
     if ([sender isKindOfClass:[NSMenuItem class]]) {
         [(NSMenuItem *)sender setState:newState ? NSControlStateValueOn : NSControlStateValueOff];
+    }
+}
+
+- (void)setDefaultConformFit:(id)sender {
+    SpliceKit_setDefaultSpatialConformType(@"fit");
+    [self _updateConformMenuFromSender:sender];
+}
+
+- (void)setDefaultConformFill:(id)sender {
+    SpliceKit_setDefaultSpatialConformType(@"fill");
+    [self _updateConformMenuFromSender:sender];
+}
+
+- (void)setDefaultConformNone:(id)sender {
+    SpliceKit_setDefaultSpatialConformType(@"none");
+    [self _updateConformMenuFromSender:sender];
+}
+
+- (void)_updateConformMenuFromSender:(id)sender {
+    if (![sender isKindOfClass:[NSMenuItem class]]) return;
+    NSMenu *menu = [(NSMenuItem *)sender menu];
+    if (!menu) return;
+    NSString *current = SpliceKit_getDefaultSpatialConformType();
+    for (NSMenuItem *item in menu.itemArray) {
+        NSString *tag = nil;
+        if (item.action == @selector(setDefaultConformFit:)) tag = @"fit";
+        else if (item.action == @selector(setDefaultConformFill:)) tag = @"fill";
+        else if (item.action == @selector(setDefaultConformNone:)) tag = @"none";
+        if (tag) {
+            item.state = [current isEqualToString:tag] ? NSControlStateValueOn : NSControlStateValueOff;
+        }
     }
 }
 
@@ -316,6 +350,33 @@ static void SpliceKit_installMenu(void) {
     suppressAutoImportItem.state = SpliceKit_isSuppressAutoImportEnabled()
         ? NSControlStateValueOn : NSControlStateValueOff;
     [optionsMenu addItem:suppressAutoImportItem];
+
+    // --- Default Spatial Conform submenu ---
+    NSMenu *conformMenu = [[NSMenu alloc] initWithTitle:@"Default Spatial Conform"];
+    NSString *currentConform = SpliceKit_getDefaultSpatialConformType();
+
+    NSMenuItem *conformFitItem = [[NSMenuItem alloc]
+        initWithTitle:@"Fit (Default)" action:@selector(setDefaultConformFit:) keyEquivalent:@""];
+    conformFitItem.target = [SpliceKitMenuController shared];
+    conformFitItem.state = [currentConform isEqualToString:@"fit"] ? NSControlStateValueOn : NSControlStateValueOff;
+    [conformMenu addItem:conformFitItem];
+
+    NSMenuItem *conformFillItem = [[NSMenuItem alloc]
+        initWithTitle:@"Fill" action:@selector(setDefaultConformFill:) keyEquivalent:@""];
+    conformFillItem.target = [SpliceKitMenuController shared];
+    conformFillItem.state = [currentConform isEqualToString:@"fill"] ? NSControlStateValueOn : NSControlStateValueOff;
+    [conformMenu addItem:conformFillItem];
+
+    NSMenuItem *conformNoneItem = [[NSMenuItem alloc]
+        initWithTitle:@"None" action:@selector(setDefaultConformNone:) keyEquivalent:@""];
+    conformNoneItem.target = [SpliceKitMenuController shared];
+    conformNoneItem.state = [currentConform isEqualToString:@"none"] ? NSControlStateValueOn : NSControlStateValueOff;
+    [conformMenu addItem:conformNoneItem];
+
+    NSMenuItem *conformMenuItem = [[NSMenuItem alloc]
+        initWithTitle:@"Default Spatial Conform" action:nil keyEquivalent:@""];
+    conformMenuItem.submenu = conformMenu;
+    [optionsMenu addItem:conformMenuItem];
 
     NSMenuItem *optionsMenuItem = [[NSMenuItem alloc] initWithTitle:@"Options" action:nil keyEquivalent:@""];
     optionsMenuItem.submenu = optionsMenu;
@@ -576,6 +637,11 @@ static void SpliceKit_appDidLaunch(void) {
     // to intercept the handler methods themselves rather than the observer registration.
     if (SpliceKit_isSuppressAutoImportEnabled()) {
         SpliceKit_installSuppressAutoImport();
+    }
+
+    // Install default spatial conform swizzle if set to non-default value
+    if (![SpliceKit_getDefaultSpatialConformType() isEqualToString:@"fit"]) {
+        SpliceKit_installDefaultSpatialConformType();
     }
 
     // Install effect browser favorites context menu (always on)
