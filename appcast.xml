@@ -6,6 +6,22 @@
     <description>SpliceKit Patcher release updates</description>
     <language>en</language>
     <item>
+      <title>SpliceKit v3.1.1</title>
+      <sparkle:version>3.1.1</sparkle:version>
+      <sparkle:shortVersionString>3.1.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Tue, 07 Apr 2026 13:16:29 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 3.1.1</h2>
+        <p>Support Final Cut Pro Creator Studio: fixed subscription validation and CloudKit crash on ad-hoc signed builds</p>
+      ]]></description>
+      <enclosure
+        url="https://github.com/elliotttate/SpliceKit/releases/download/v3.1.1/SpliceKit-v3.1.1.dmg"
+        sparkle:edSignature="zEtp28uEs21wtf6/AeO/Rn2PBinZNJi/ZsyzM7jmqtyfuB2Pv88sSyrbxYCiAYH0HWo5Z3El5d6+VqJkFkGJBw=="
+        length="10626976"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>SpliceKit v3.1.0</title>
       <sparkle:version>3.1.0</sparkle:version>
       <sparkle:shortVersionString>3.1.0</sparkle:shortVersionString>
