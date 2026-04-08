@@ -1,5 +1,6 @@
 -- Add Cross Dissolve at every edit point
 sk.go_to_start()
+sk.toast("Adding Cross Dissolves...")
 local added = 0
 local skipped = 0
 local last_pos = -1
@@ -16,4 +17,4 @@ for i = 1, 200 do
         skipped = skipped + 1
     end
 end
-sk.log(string.format("[Transitions] Added %d Cross Dissolves (%d skipped)", added, skipped))
+sk.toast(string.format("Added %d Cross Dissolves (%d skipped)", added, skipped))
