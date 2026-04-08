@@ -803,22 +803,18 @@ def set_playback_speed(rate: float = None, action: str = None) -> str:
 
 @mcp.tool(annotations=_tool_annotations("detect_scene_changes"))
 def detect_scene_changes(threshold: float = 0.35, action: str = "detect", sample_interval: float = 0.1) -> str:
-    """Inspect scene changes, while still supporting legacy mutating actions for compatibility.
+    """Use this read-only tool to inspect scene changes before deciding whether to mark or blade them.
 
     Args:
         threshold: Sensitivity (0.0-1.0). Lower = more sensitive. Default 0.35.
-        action: Deprecated compatibility argument. Supports "detect", "markers", or "blade".
-                Prefer mark_scene_changes() or blade_scene_changes() for new callers.
+        action: Deprecated compatibility argument. Only "detect" is accepted here.
         sample_interval: Seconds between sampled frames. Default 0.1.
 
     Returns list of scene change timestamps with confidence scores.
     Uses GPU-style histogram comparison (same approach as FCP internally).
     """
-    if action not in {"detect", "markers", "blade"}:
-        return (
-            "Error: action must be one of: detect, markers, blade. "
-            "Prefer mark_scene_changes() or blade_scene_changes() for mutating operations."
-        )
+    if action != "detect":
+        return "Error: detect_scene_changes() is read-only. Use mark_scene_changes() or blade_scene_changes()."
 
     r = bridge.call("scene.detect", threshold=threshold, action=action, sampleInterval=sample_interval)
     if _err(r):

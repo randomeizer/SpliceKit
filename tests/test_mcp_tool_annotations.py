@@ -173,28 +173,9 @@ class MCPToolAnnotationTests(unittest.TestCase):
             ],
         )
 
-    def test_detect_scene_changes_keeps_legacy_action_compatibility(self):
-        calls = []
-
-        def fake_call(method, **params):
-            calls.append((method, params))
-            return {
-                "count": 1,
-                "threshold": params["threshold"],
-                "mediaFile": "test.mov",
-                "action": params["action"],
-                "sceneChanges": [{"time": 1.5, "score": 0.9}],
-            }
-
-        self.module.bridge.call = fake_call
-
+    def test_read_only_scene_tool_rejects_mutating_legacy_actions(self):
         result = self.module.detect_scene_changes(action="markers")
-
-        self.assertIn("Action: markers applied", result)
-        self.assertEqual(
-            calls,
-            [("scene.detect", {"threshold": 0.35, "action": "markers", "sampleInterval": 0.1})],
-        )
+        self.assertIn("read-only", result)
 
     def test_timeline_split_wrappers_accept_documented_actions(self):
         self.module.bridge.call = lambda method, **params: {"ok": True, "action": params["action"]}
