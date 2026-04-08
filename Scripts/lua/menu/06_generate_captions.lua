@@ -1,5 +1,6 @@
 -- Generate social-style captions on the timeline
--- Uses FCP Native transcription, then generates bold_pop captions.
+-- Transcribes using the user's configured engine (default: Parakeet v3),
+-- then generates bold_pop captions.
 
 -- Check if transcript already has words (from previous transcription)
 local ts = sk.rpc("transcript.getState", {})
@@ -8,7 +9,6 @@ local words = ts and ts.words
 if not words or #words == 0 then
     -- No words yet — start transcription if not already running
     if not ts or ts.status ~= "transcribing" then
-        sk.rpc("transcript.setEngine", {engine = "fcpNative"})
         sk.rpc("transcript.open", {})
     end
     -- Wait up to 15 seconds for short clips
@@ -28,10 +28,10 @@ if not words or #words == 0 then
 end
 
 if not words or #words == 0 then
-    -- Still transcribing — long clip, tell user to wait
+    -- Still transcribing — tell user to wait and re-run
     sk.alert("Captions",
-        "Transcription in progress — FCP Native can take several minutes for long clips.\n\n" ..
-        "Run this script again once FCP finishes transcribing.\n" ..
+        "Transcription in progress...\n\n" ..
+        "Run this script again once transcription finishes.\n" ..
         "You can check progress in the Transcript panel (Ctrl+Option+T).")
     return
 end

@@ -454,9 +454,12 @@ static int sk_rpc(lua_State *L) {
         @"method": @(method),
         @"params": params
     };
-    NSDictionary *response = SpliceKitLua_callHandler(^{
-        return SpliceKit_handleRequest(request);
-    });
+    // Call handleRequest directly on the Lua queue — NOT on the main thread.
+    // Each RPC handler internally dispatches to main thread when needed.
+    // Forcing everything through the main thread here caused soft deadlocks:
+    // polling loops (e.g. transcript.getState) would starve the main thread
+    // runloop, preventing async operations (transcription) from progressing.
+    NSDictionary *response = SpliceKit_handleRequest(request);
     id result = response[@"result"];
     SpliceKitLua_pushValue(L, result ?: response);
     return 1;
