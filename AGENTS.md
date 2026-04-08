@@ -39,9 +39,14 @@ If `get_timeline_clips()` returns an error about "no sequence", load a project:
 ```python
 # Navigate: library -> sequences -> find one with content -> load it
 libs = call_method_with_args("FFLibraryDocument", "copyActiveLibraries", "[]", true, true)
+libs_handle = json.loads(libs)["handle"]
 lib = call_method_with_args(libs_handle, "objectAtIndex:", '[{"type":"int","value":0}]', false, true)
+lib_handle = json.loads(lib)["handle"]
 seqs = call_method_with_args(lib_handle, "_deepLoadedSequences", "[]", false, true)
+seqs_handle = json.loads(seqs)["handle"]
 allSeqs = call_method_with_args(seqs_handle, "allObjects", "[]", false, true)
+# For each sequence result, extract its "handle" before calling hasContainedItems
+# Example: seq_handle = json.loads(seq)["handle"]
 # Check each: call_method_with_args(seq_handle, "hasContainedItems", "[]", false)
 # Load: get NSApp -> delegate -> activeEditorContainer -> loadEditorForSequence:
 ```

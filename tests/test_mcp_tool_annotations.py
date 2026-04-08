@@ -36,15 +36,27 @@ def load_server_module():
     fake_fastmcp = types.ModuleType("mcp.server.fastmcp")
     fake_fastmcp.FastMCP = FakeFastMCP
 
-    sys.modules["mcp"] = fake_mcp
-    sys.modules["mcp.server"] = fake_mcp_server
-    sys.modules["mcp.server.fastmcp"] = fake_fastmcp
+    injected_modules = {
+        "mcp": fake_mcp,
+        "mcp.server": fake_mcp_server,
+        "mcp.server.fastmcp": fake_fastmcp,
+    }
+    previous_modules = {name: sys.modules.get(name) for name in injected_modules}
 
-    spec = importlib.util.spec_from_file_location("splicekit_mcp_server_under_test", module_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    try:
+        sys.modules.update(injected_modules)
+
+        spec = importlib.util.spec_from_file_location("splicekit_mcp_server_under_test", module_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for name, previous in previous_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 class MCPToolAnnotationTests(unittest.TestCase):
@@ -81,6 +93,7 @@ class MCPToolAnnotationTests(unittest.TestCase):
             "timeline_action": {"readOnlyHint": False, "destructiveHint": True},
             "timeline_navigation_action": {"readOnlyHint": False, "destructiveHint": False},
             "timeline_destructive_action": {"readOnlyHint": False, "destructiveHint": True},
+            "call_method": {"readOnlyHint": False, "destructiveHint": True},
             "manage_handles": {"readOnlyHint": False, "destructiveHint": False},
             "list_handles": {"readOnlyHint": True, "destructiveHint": False},
         }

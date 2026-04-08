@@ -215,6 +215,7 @@ DESTRUCTIVE_TOOLS = {
     "timeline_action",
     "timeline_destructive_action",
     "batch_export",
+    "call_method",
     "call_method_with_args",
     "set_object_property",
     "import_fcpxml",
